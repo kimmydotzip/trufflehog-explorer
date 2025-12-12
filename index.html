@@ -263,13 +263,19 @@
       background-position: right 1rem center;
       background-size: 16px;
       appearance: none;
-      transition: box-shadow 0.2s ease;
+      transition: box-shadow 0.2s ease, border-color 0.2s ease;
       color: #555;
     }
     .controls-container select:focus,
     .controls-container input[type="text"]:focus {
       outline: none;
       box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    /* Active filter highlight */
+    .controls-container input[type="text"].active-filter {
+      border-color: #b56cc2;
+      background-color: #fef8ff;
+      box-shadow: 0 0 0 2px rgba(181, 108, 194, 0.1);
     }
 
     /*********************************
@@ -418,6 +424,10 @@
       font-size: 0.85rem;
       color: #333;
       white-space: pre-wrap;
+      word-break: break-all; /* Break long strings */
+      overflow-wrap: break-word; /* Wrap long words */
+      max-height: 200px; /* Limit height */
+      overflow-y: auto; /* Add scroll for long content */
       margin-top: 6px;
     }
 
@@ -564,6 +574,15 @@
               <span class="info-icon" title="Pick a start and end date from the calendar.">?</span>
             </label>
             <input type="text" id="filterDateRange" placeholder="Select date range..." />
+          </div>
+
+          <!-- REGEX Search -->
+          <div>
+            <label for="filterRegex">
+              Search Raw Results (Regex):
+              <span class="info-icon" title="Use regex patterns to search leaked information. E.g., password.*123">?</span>
+            </label>
+            <input type="text" id="filterRegex" placeholder="Enter regex pattern..." />
           </div>
 
           <!-- Sort -->
@@ -755,6 +774,7 @@
     const filterDetector = document.getElementById('filterDetector');
     const filterFileName = document.getElementById('filterFileName');
     const filterVerified = document.getElementById('filterVerified');
+    const filterRegex = document.getElementById('filterRegex');
     const sortBy = document.getElementById('sortBy');
 
     // Stats elements
@@ -778,6 +798,11 @@
     let allResults = [];
     // Current filtered subset
     let currentFilteredResults = [];
+
+    // Windowing variables - only one batch rendered at a time
+    let windowBatchSize = 50;
+    let currentBatchIndex = 0;
+    let totalBatches = 0;
 
     // statusesMap: { [uniqueId]: { Verified: bool, Rejected: bool } }
     let statusesMap = {};
@@ -1040,11 +1065,38 @@
       filterRepository, filterDetector, filterFileName, filterVerified, sortBy
     ].forEach(el => el.addEventListener('change', applyFilters));
 
+    // Add regex filter with debouncing and visual feedback
+    let regexTimeout;
+    filterRegex.addEventListener('input', () => {
+      clearTimeout(regexTimeout);
+      regexTimeout = setTimeout(() => {
+        applyFilters();
+        // Add visual feedback if regex is active
+        if (filterRegex.value.trim()) {
+          filterRegex.classList.add('active-filter');
+        } else {
+          filterRegex.classList.remove('active-filter');
+        }
+      }, 300); // Debounce 300ms
+    });
+
     function applyFilters() {
       const repoVal = filterRepository.value;
       const detVal = filterDetector.value;
       const fileVal = filterFileName.value;
       const verVal = filterVerified.value;
+      const regexVal = filterRegex.value.trim();
+
+      // Compile regex if provided
+      let regexPattern = null;
+      if (regexVal) {
+        try {
+          regexPattern = new RegExp(regexVal, 'i'); // Case-insensitive by default
+        } catch (e) {
+          console.warn('Invalid regex pattern:', e);
+          regexPattern = null;
+        }
+      }
 
       let [startTime, endTime] = [null, null];
       if (selectedDateRange.length === 2 && selectedDateRange[0] && selectedDateRange[1]) {
@@ -1074,7 +1126,10 @@
         const dateMatch = (!startTime || (tsMs && tsMs >= startTime)) &&
                           (!endTime || (tsMs && tsMs <= endTime));
 
-        return verifiedMatch && repoMatch && detMatch && fileMatch && dateMatch;
+        // Regex match on Raw field
+        const regexMatch = !regexPattern || (r.Raw && regexPattern.test(r.Raw));
+
+        return verifiedMatch && repoMatch && detMatch && fileMatch && dateMatch && regexMatch;
       });
 
       // Sort results
@@ -1106,20 +1161,77 @@
       }
 
       currentFilteredResults = filtered;
-      renderResults(filtered);
-      filteredCountDisplay.textContent = `Currently Displaying ${filtered.length} / ${allResults.length} Findings`;
+      currentBatchIndex = 0;
+      totalBatches = Math.ceil(filtered.length / windowBatchSize);
+      renderCurrentBatch();
+      updateFilteredCountDisplay();
     }
 
-    function renderResults(results) {
+    function updateFilteredCountDisplay() {
+      const start = currentBatchIndex * windowBatchSize + 1;
+      const end = Math.min((currentBatchIndex + 1) * windowBatchSize, currentFilteredResults.length);
+      filteredCountDisplay.textContent = `Showing ${start}-${end} / ${currentFilteredResults.length} filtered (${allResults.length} total)`;
+    }
+
+    function renderCurrentBatch() {
       resultsContainer.innerHTML = '';
-      if (!results.length) {
+
+      if (!currentFilteredResults.length) {
         resultsContainer.innerHTML = '<p>No results match the current filters.</p>';
         return;
       }
-      results.forEach((res) => {
-        const card = createResultCard(res);
+
+      const start = currentBatchIndex * windowBatchSize;
+      const end = Math.min(start + windowBatchSize, currentFilteredResults.length);
+
+      for (let i = start; i < end; i++) {
+        const card = createResultCard(currentFilteredResults[i]);
         resultsContainer.appendChild(card);
-      });
+      }
+
+      addBatchNavigation();
+    }
+
+    function addBatchNavigation() {
+      if (totalBatches <= 1) return;
+
+      const nav = document.createElement('div');
+      nav.style.cssText = 'display: flex; justify-content: center; gap: 10px; margin-top: 20px; align-items: center;';
+
+      const prevBtn = document.createElement('button');
+      prevBtn.className = 'btn btn-info';
+      prevBtn.innerHTML = '<i class="bi bi-chevron-left"></i> Previous';
+      prevBtn.disabled = currentBatchIndex === 0;
+      prevBtn.onclick = () => {
+        if (currentBatchIndex > 0) {
+          currentBatchIndex--;
+          renderCurrentBatch();
+          updateFilteredCountDisplay();
+          window.scrollTo(0, 0);
+        }
+      };
+
+      const info = document.createElement('span');
+      info.style.cssText = 'color: #666; font-weight: 500;';
+      info.textContent = `Page ${currentBatchIndex + 1} of ${totalBatches}`;
+
+      const nextBtn = document.createElement('button');
+      nextBtn.className = 'btn btn-info';
+      nextBtn.innerHTML = 'Next <i class="bi bi-chevron-right"></i>';
+      nextBtn.disabled = currentBatchIndex >= totalBatches - 1;
+      nextBtn.onclick = () => {
+        if (currentBatchIndex < totalBatches - 1) {
+          currentBatchIndex++;
+          renderCurrentBatch();
+          updateFilteredCountDisplay();
+          window.scrollTo(0, 0);
+        }
+      };
+
+      nav.appendChild(prevBtn);
+      nav.appendChild(info);
+      nav.appendChild(nextBtn);
+      resultsContainer.appendChild(nav);
     }
 
     /**************************************************************
@@ -1181,10 +1293,13 @@
 
       header.appendChild(actionsDiv);
 
-      // Toggle collapse/expand on header click
       header.addEventListener('click', () => {
         container.classList.toggle('collapsed');
       });
+
+      if (expandAllState) {
+        container.classList.add('collapsed');
+      }
 
       container.appendChild(header);
 
@@ -1250,33 +1365,11 @@
         : 'No';
       body.appendChild(createDetail('Rejected:', rejectedTag));
 
-      // Leaked Info
+      // Leaked Info - no expansion needed, scrolling handles it
       const leakedInfoDiv = document.createElement('div');
       leakedInfoDiv.classList.add('leaked-container');
       const rawVal = result.Raw || 'N/A';
-
-      if (rawVal.length > 300) {
-        const originalText = rawVal;
-        const previewText = rawVal.slice(0, 300) + '...';
-        leakedInfoDiv.innerHTML = `<strong>Leaked Information:</strong>\n${previewText}`;
-
-        const toggleLink = document.createElement('button');
-        toggleLink.textContent = 'Show More';
-        toggleLink.classList.add('btn', 'btn-info');
-        toggleLink.style.marginTop = '10px';
-
-        let expanded = false;
-        toggleLink.addEventListener('click', (e) => {
-          e.stopPropagation();
-          expanded = !expanded;
-          leakedInfoDiv.innerHTML = `<strong>Leaked Information:</strong>\n${expanded ? originalText : previewText}`;
-          toggleLink.textContent = expanded ? 'Show Less' : 'Show More';
-          leakedInfoDiv.appendChild(toggleLink);
-        });
-        leakedInfoDiv.appendChild(toggleLink);
-      } else {
-        leakedInfoDiv.innerHTML = `<strong>Leaked Information:</strong>\n${rawVal}`;
-      }
+      leakedInfoDiv.innerHTML = `<strong>Leaked Information:</strong>\n${rawVal}`;
       body.appendChild(leakedInfoDiv);
 
       container.appendChild(body);
@@ -1311,16 +1404,14 @@
       massUpdateFiltered({ Verify: true });
     });
     function massUpdateFiltered(action) {
-      for (const r of allResults) {
-        // Only affect the currently filtered set
-        if (!currentFilteredResults.includes(r)) continue;
+      currentFilteredResults.forEach(r => {
         if (action.Reject) r.Rejected = true;
         if (action.Verify) r.Verified = true;
         statusesMap[r._id] = {
           Verified: r.Verified,
           Rejected: r.Rejected
         };
-      }
+      });
       storeStatuses();
       updateStats();
       applyFilters();
@@ -1371,19 +1462,15 @@
       downloadJsonFile(allResults, "session_backup.json");
     });
 
-    /**************************************************************
-     * EXPAND/COLLAPSE ALL
-     **************************************************************/
     expandAllBtn.addEventListener('click', () => {
-      const cards = document.querySelectorAll('.result-container');
-      if (!expandAllState) {
-        cards.forEach(card => card.classList.add('collapsed'));
+      expandAllState = !expandAllState;
+      if (expandAllState) {
         expandAllBtn.innerHTML = '<i class="bi bi-arrows-expand"></i> Expand All';
       } else {
-        cards.forEach(card => card.classList.remove('collapsed'));
         expandAllBtn.innerHTML = '<i class="bi bi-arrows-collapse"></i> Collapse All';
       }
-      expandAllState = !expandAllState;
+      renderCurrentBatch();
+      updateFilteredCountDisplay();
     });
 
     /**************************************************************
@@ -1394,6 +1481,8 @@
       filterDetector.value = '';
       filterFileName.value = '';
       filterVerified.value = '';
+      filterRegex.value = '';
+      filterRegex.classList.remove('active-filter'); // Remove visual feedback
       sortBy.value = '';
 
       selectedDateRange = [null, null];

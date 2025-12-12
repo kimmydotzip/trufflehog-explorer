@@ -39,7 +39,7 @@ You can use online version here: [**TruffleHog Explorer**](gonzosint.github.io/t
 
 ### 1. Clone the Repository
 ```bash
-$ git clone https://github.com/yourusername/trufflehog-explorer.git
+$ git clone https://github.com/GONZOsint/trufflehog-explorer.git
 $ cd trufflehog-explorer
 ```
 
