@@ -9,6 +9,9 @@
 
   const el = {
     trufflehogFile: $('trufflehogFile'),
+    appendLoad: $('appendLoad'),
+    loadStatus: $('loadStatus'),
+    clearDataBtn: $('clearDataBtn'),
     sessionFile: $('sessionFile'),
     fieldFilters: $('fieldFilters'),
     filterVerified: $('filterVerified'),
@@ -145,26 +148,45 @@
     refresh();
   }
 
-  async function parseFiles(fileList) {
-    const records = [];
+  // Files are merged one by one so overlapping scans (e.g. full + verified-only) cross-reference.
+  async function parseFiles(fileList, base = []) {
+    let records = base;
+    const totals = { added: 0, merged: 0, upgraded: 0 };
     for (const file of fileList) {
       try {
         const { records: recs, errors } = C.parseFindings(await file.text(), file.name);
         errors.forEach((e) => logError(`${file.name}${e.line ? ` line ${e.line}` : ''}: ${e.message}`));
-        records.push(...recs);
+        const result = C.mergeRecords(records, recs);
+        records = result.records;
+        for (const k of Object.keys(totals)) totals[k] += result.stats[k];
       } catch (e) {
         logError(`Error reading ${file.name}: ${e.message}`);
       }
     }
-    return records;
+    return { records, totals };
   }
 
   el.trufflehogFile.addEventListener('change', async (event) => {
     const files = [...event.target.files];
     if (!files.length) return;
     el.errorLog.replaceChildren();
-    setRecords(await parseFiles(files));
+    const append = el.appendLoad.checked && state.records.length > 0;
+    const { records, totals } = await parseFiles(files, append ? state.records : []);
+    setRecords(records);
+    const parts = [`${append ? 'Added' : 'Loaded'} ${totals.added} finding(s) from ${files.length} file(s).`];
+    if (totals.merged) parts.push(`${totals.merged} matched existing locations`);
+    if (totals.upgraded) parts.push(`${totals.upgraded} marked verified by cross-reference`);
+    const prunedVerified = records.filter((r) => r.verified && r.review.pruned).length;
+    if (prunedVerified) parts.push(`⚠ ${prunedVerified} verified finding(s) are pruned — use Show Pruned with Verified filter to review`);
+    el.loadStatus.textContent = parts.join(' · ');
     event.target.value = '';
+  });
+
+  el.clearDataBtn.addEventListener('click', () => {
+    if (!state.records.length) return;
+    if (!confirm('Unload all findings? Review state stays saved in this browser and is reapplied if you load the same data again.')) return;
+    el.loadStatus.textContent = '';
+    setRecords([]);
   });
 
   // Session format: JSON array of findings annotated with Pruned/Confirmed (also reads legacy Rejected).

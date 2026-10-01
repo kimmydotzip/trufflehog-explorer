@@ -38,6 +38,13 @@
         <div class="upload-group">
           <input type="file" id="trufflehogFile" accept=".json" multiple class="file-input" />
           <p>Select one or more TruffleHog JSON (NDJSON) files</p>
+          <label class="checkbox-label" title="Merge into the loaded findings instead of replacing them. Matching locations are combined and a TruffleHog-verified copy marks the finding verified.">
+            <input type="checkbox" id="appendLoad" /> Add to current data (cross-reference)
+          </label>
+          <p id="loadStatus" class="hint" aria-live="polite"></p>
+          <button class="btn btn-secondary btn-small" id="clearDataBtn" title="Unload all findings (review state is kept in this browser)">
+            <i class="bi bi-trash"></i> &nbspClear Data
+          </button>
         </div>
       </div>
 

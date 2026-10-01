@@ -333,6 +333,40 @@
     return { rules, errors };
   }
 
+  // Merges incoming findings into base by location. The k-th incoming copy of a location matches the
+  // k-th existing copy, so exact repeats stay distinct and re-loading the same file is idempotent.
+  // A TruffleHog-verified copy upgrades an unverified one (its original object becomes the export source).
+  function mergeRecords(base, incoming) {
+    const byKey = new Map();
+    for (const r of base) {
+      if (!byKey.has(r.locationKey)) byKey.set(r.locationKey, []);
+      byKey.get(r.locationKey).push(r);
+    }
+    const consumed = new Map();
+    const records = base.slice();
+    const stats = { added: 0, merged: 0, upgraded: 0 };
+    for (const r of incoming) {
+      const k = consumed.get(r.locationKey) || 0;
+      consumed.set(r.locationKey, k + 1);
+      const target = (byKey.get(r.locationKey) || [])[k];
+      if (!target) {
+        records.push(r);
+        stats.added++;
+        continue;
+      }
+      stats.merged++;
+      for (const f of r.sourceFiles) if (!target.sourceFiles.includes(f)) target.sourceFiles.push(f);
+      if (r.verified && !target.verified) {
+        target.verified = true;
+        target.raw = r.raw;
+        target.verificationError = r.verificationError;
+        target.extra = r.extra || target.extra;
+        stats.upgraded++;
+      }
+    }
+    return { records, stats };
+  }
+
   // Groups records sharing the same detector + secret, largest groups first (stable for ties).
   function groupBySecret(records) {
     const groups = new Map();
@@ -363,6 +397,6 @@
     escapeRegex, splitPatterns, compilePattern, compileFilter, matchFilter, extraValues,
     FIELDS, FIELD_BY_KEY, buildPredicate,
     isProtected, planPrune, ruleFromSpec, describeRule, parseRules,
-    groupBySecret, summarizeGroup,
+    groupBySecret, summarizeGroup, mergeRecords,
   };
 });
