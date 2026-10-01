@@ -258,7 +258,6 @@
       <!-- Stats Container -->
       <div class="stats-container">
         <h2>Statistics</h2>
-        <!-- We have 8 stats now, so it forms a 4x2 grid. -->
         <div class="stats-grid">
           <div class="stats-detail">
             <strong><i class="bi bi-card-list"></i> Total</strong>
@@ -293,6 +292,22 @@
             <strong><i class="bi bi-scissors"></i> Pruned</strong>
             <span id="prunedCount">0</span>
           </div>
+          <div class="stats-detail">
+            <strong><i class="bi bi-inbox"></i> Kept</strong>
+            <span id="keptCount">0</span>
+          </div>
+          <div class="stats-detail">
+            <strong><i class="bi bi-check2-circle"></i> Confirmed</strong>
+            <span id="confirmedCount">0</span>
+          </div>
+          <div class="stats-detail" title="Unique detector + secret values among kept findings">
+            <strong><i class="bi bi-key"></i> Unique Secrets</strong>
+            <span id="uniqueSecrets">0</span>
+          </div>
+          <div class="stats-detail" title="Findings where TruffleHog could not complete verification">
+            <strong><i class="bi bi-exclamation-triangle"></i> Verify Errors</strong>
+            <span id="verificationErrors">0</span>
+          </div>
         </div>
 
         <!-- Verified Stats -->
@@ -314,15 +329,31 @@
         </div>
       </div>
 
+      <!-- Noise hotspots -->
+      <details class="hotspots" id="hotspotsPanel" open hidden>
+        <summary><i class="bi bi-fire"></i> Noise hotspots <span class="hint">— detector + file name pairs with the most kept findings</span></summary>
+        <div id="hotspotsList"></div>
+      </details>
+
       <!-- Results toolbar -->
       <div class="results-toolbar">
-        <div class="view-switch" role="group" aria-label="Results view">
-          <button class="btn btn-info active" id="viewFindingsBtn" aria-pressed="true">
-            <i class="bi bi-list-ul"></i> &nbspFindings
-          </button>
-          <button class="btn btn-info" id="viewGroupsBtn" aria-pressed="false" title="One card per unique detector + secret value">
-            <i class="bi bi-collection"></i> &nbspGroup by Secret
-          </button>
+        <div id="filterChips" class="filter-chips" aria-label="Active filters"></div>
+        <div class="toolbar-right">
+          <label for="pageSize" class="small-label">Per page</label>
+          <select id="pageSize">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+          <div class="view-switch" role="group" aria-label="Results view">
+            <button class="btn btn-info active" id="viewFindingsBtn" aria-pressed="true">
+              <i class="bi bi-list-ul"></i> &nbspFindings
+            </button>
+            <button class="btn btn-info" id="viewGroupsBtn" aria-pressed="false" title="One card per unique detector + secret value">
+              <i class="bi bi-collection"></i> &nbspGroup by Secret
+            </button>
+          </div>
         </div>
       </div>
 

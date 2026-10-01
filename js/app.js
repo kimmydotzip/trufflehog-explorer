@@ -55,6 +55,14 @@
     firstSeen: $('firstSeen'),
     lastSeen: $('lastSeen'),
     prunedCount: $('prunedCount'),
+    keptCount: $('keptCount'),
+    confirmedCount: $('confirmedCount'),
+    uniqueSecrets: $('uniqueSecrets'),
+    verificationErrors: $('verificationErrors'),
+    hotspotsPanel: $('hotspotsPanel'),
+    hotspotsList: $('hotspotsList'),
+    filterChips: $('filterChips'),
+    pageSize: $('pageSize'),
     verifiedCount: $('verifiedCount'),
     unverifiedCount: $('unverifiedCount'),
     verificationBar: $('verificationBar'),
@@ -77,6 +85,7 @@
     view: 'findings', // or 'groups'
     groups: [],
     expandedGroups: new Set(),
+    predicate: null,
     revealAll: false,
     revealed: new Set(), // secretKeys revealed individually
   };
@@ -261,7 +270,7 @@
     el.totalFindings.textContent = recs.length;
     el.uniqueRepositories.textContent = uniq((r) => r.repository);
     el.uniqueDetectors.textContent = uniq((r) => r.detector);
-    el.uniqueFiles.textContent = new Set(recs.flatMap((r) => r.sourceFiles)).size;
+    el.uniqueFiles.textContent = new Set(recs.filter((r) => r.file).map((r) => `${r.repository || ''}\u0000${r.file}`)).size;
     el.uniqueAuthors.textContent = uniq((r) => r.email);
 
     const times = recs.map((r) => r.timestamp).filter((t) => t !== null);
@@ -272,6 +281,12 @@
     el.verifiedCount.textContent = verified;
     el.unverifiedCount.textContent = recs.length - verified;
     el.prunedCount.textContent = recs.filter((r) => r.review.pruned).length;
+    const keptRecs = recs.filter((r) => !r.review.pruned);
+    el.keptCount.textContent = keptRecs.length;
+    el.confirmedCount.textContent = recs.filter((r) => r.review.confirmed).length;
+    el.uniqueSecrets.textContent = new Set(keptRecs.map((r) => r.secretKey)).size;
+    el.verificationErrors.textContent = recs.filter((r) => r.verificationError).length;
+    renderHotspots(keptRecs);
     el.verificationBar.style.width = recs.length ? ((verified / recs.length) * 100).toFixed(1) + '%' : '0%';
   }
 
@@ -314,6 +329,8 @@
     }
 
     const out = state.records.filter((r) => !(state.hidePruned && r.review.pruned) && predicate.test(r));
+    state.predicate = predicate;
+    renderChips(spec);
 
     const sorters = {
       dateAsc: (a, b) => (a.timestamp || 0) - (b.timestamp || 0),
@@ -359,14 +376,32 @@
       : `Showing 0 / 0${groupNote} (${state.records.length} total)`;
 
     if (!total) {
-      el.results.replaceChildren(h('p', {
-        text: state.records.length ? 'No results match the current filters.' : 'Load one or more TruffleHog JSON files to begin.',
-      }));
+      el.results.replaceChildren(renderEmptyState());
       return;
     }
     const renderItem = state.view === 'groups' ? renderGroupCard : renderCard;
     const cards = list.slice(startIdx, endIdx).map(renderItem);
     el.results.replaceChildren(...cards, renderPager());
+  }
+
+  function renderEmptyState() {
+    if (!state.records.length) {
+      return h('div', { class: 'empty-state' },
+        h('h3', {}, icon('cloud-upload'), ' No findings loaded'),
+        h('p', { text: 'Load one or more TruffleHog JSON / NDJSON files (trufflehog ... --json) from the sidebar.' }),
+        h('ul', {},
+          h('li', { text: 'Tip: load a full scan and a verified-only scan together to mark verified findings.' }),
+          h('li', { text: 'Tip: load a review file afterwards to resume earlier pruning decisions.' })));
+    }
+    const prunedMatches = state.hidePruned && state.predicate
+      ? state.records.filter((r) => r.review.pruned && state.predicate.test(r)).length : 0;
+    return h('div', { class: 'empty-state' },
+      h('h3', {}, icon('funnel'), ' Nothing matches'),
+      h('p', { text: prunedMatches ? `${prunedMatches} pruned finding(s) match these filters but are hidden.` : 'No findings match the current filters.' }),
+      h('div', { class: 'buttons-group' },
+        prunedMatches ? h('button', { class: 'btn btn-info', onclick: () => el.togglePrunedBtn.click() }, icon('eye'), ' Show Pruned') : '',
+        state.predicate && state.predicate.active
+          ? h('button', { class: 'btn btn-danger', onclick: () => el.clearFiltersBtn.click() }, icon('backspace'), ' Clear Filters') : ''));
   }
 
   function renderPager() {
@@ -589,10 +624,70 @@
   const rulePredicate = (rule) => C.buildPredicate(rule).test;
 
   function setFiltersFromRule(rule) {
-    for (const [key, { input }] of Object.entries(fieldInputs)) input.value = rule.fields[key] || '';
-    el.filterVerified.value = rule.verified || '';
+    setFilterFields(rule.fields, rule.verified);
+  }
+
+  function setFilterFields(fields, verified = '') {
+    for (const [key, { input }] of Object.entries(fieldInputs)) input.value = fields[key] || '';
+    el.filterVerified.value = verified;
     applyFilters();
   }
+
+  /* ---------------- Hotspots ---------------- */
+
+  function renderHotspots(keptRecs) {
+    el.hotspotsPanel.hidden = !state.records.length;
+    const spots = C.hotspots(keptRecs, 8);
+    if (!spots.length) {
+      el.hotspotsList.replaceChildren(h('p', { class: 'hint', text: 'No kept findings.' }));
+      return;
+    }
+    const max = spots[0].count;
+    el.hotspotsList.replaceChildren(h('table', { class: 'hotspot-table' },
+      h('thead', {}, h('tr', {}, ['Detector', 'File name', 'Findings', 'Secrets', 'Repos', ''].map((t) => h('th', { text: t })))),
+      h('tbody', {}, spots.map((s) => {
+        const fields = C.hotspotFields(s);
+        return h('tr', {},
+          h('td', { text: s.detector }),
+          h('td', { text: s.fileName }),
+          h('td', {}, h('div', { class: 'hotspot-bar' },
+            h('span', { style: `width:${Math.max(4, (s.count / max) * 100).toFixed(0)}%` }), h('em', { text: String(s.count) }))),
+          h('td', { text: String(s.secrets) }),
+          h('td', { text: String(s.repos) }),
+          h('td', { class: 'hotspot-actions' },
+            h('button', { class: 'btn btn-info btn-small', title: 'Show these findings', onclick: () => setFilterFields(fields) }, icon('funnel'), ' Filter'),
+            h('button', {
+              class: 'btn btn-danger btn-small', title: 'Prune these findings (verified/confirmed are skipped)',
+              onclick: () => pruneWithPreview(state.records, C.buildPredicate({ fields }).test,
+                `Hotspot: ${s.detector} in ${s.fileName}`, `Prune ${s.detector} findings in ${s.fileName}`),
+            }, icon('scissors'), ' Prune')));
+      }))));
+  }
+
+  /* ---------------- Filter chips ---------------- */
+
+  function renderChips(spec) {
+    const chips = [];
+    const chip = (label, clear) => chips.push(h('span', { class: 'chip' },
+      h('span', { text: label }),
+      h('button', { class: 'chip-x', title: `Remove filter ${label}`, 'aria-label': `Remove filter ${label}`, onclick: clear }, '×')));
+    for (const [key, value] of Object.entries(spec.fields)) {
+      chip(`${C.FIELD_BY_KEY[key].label}: ${value}`, () => { fieldInputs[key].input.value = ''; applyFilters(); });
+    }
+    if (spec.verified) chip(spec.verified === 'true' ? 'Verified only' : 'Unverified only', () => { el.filterVerified.value = ''; applyFilters(); });
+    if (spec.from !== null) {
+      chip(`Date: ${state.dateRange.map((d) => d.toLocaleDateString()).join(' – ')}`, () => {
+        state.dateRange = [null, null];
+        datePicker.clear();
+        applyFilters();
+      });
+    }
+    if (chips.length > 1) {
+      chips.push(h('button', { class: 'chip chip-clear', onclick: () => el.clearFiltersBtn.click() }, 'Clear all'));
+    }
+    el.filterChips.replaceChildren(...chips);
+  }
+
 
   function renderRules() {
     if (!state.rules.length) {
@@ -741,6 +836,24 @@
   }
   el.viewFindingsBtn.addEventListener('click', () => setView('findings'));
   el.viewGroupsBtn.addEventListener('click', () => setView('groups'));
+
+  el.pageSize.addEventListener('change', () => {
+    state.pageSize = Number(el.pageSize.value) || 50;
+    state.page = 0;
+    render();
+  });
+
+  // "/" focuses the first filter (like many search UIs); Escape leaves a filter field.
+  document.addEventListener('keydown', (e) => {
+    const t = e.target;
+    const typing = t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+    if (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      fieldInputs[C.FIELDS[0].key].input.focus();
+    } else if (e.key === 'Escape' && typing && el.fieldFilters.contains(t)) {
+      t.blur();
+    }
+  });
 
   el.revealSecretsBtn.addEventListener('click', () => {
     state.revealAll = !state.revealAll;

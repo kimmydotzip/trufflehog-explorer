@@ -477,6 +477,35 @@
     return s || fallback;
   }
 
+  /* ---------------- Hotspots ---------------- */
+
+  const basename = (path) => str(path).split(/[\\/]/).pop();
+
+  // Detector + file name pairs with the most findings: where false positives usually cluster.
+  function hotspots(records, limit = 10) {
+    const map = new Map();
+    for (const r of records) {
+      const name = basename(r.file) || '(no file)';
+      const key = r.detector + '\u0000' + name;
+      let s = map.get(key);
+      if (!s) map.set(key, (s = { detector: r.detector, fileName: name, count: 0, secrets: new Set(), repos: new Set(), hasFile: !!r.file }));
+      s.count++;
+      s.secrets.add(r.secretKey);
+      if (r.repository) s.repos.add(r.repository);
+    }
+    return [...map.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit)
+      .map((s) => ({ detector: s.detector, fileName: s.fileName, count: s.count, secrets: s.secrets.size, repos: s.repos.size, hasFile: s.hasFile }));
+  }
+
+  // Filter spec fields that match exactly one hotspot (detector by exact name, file by name in any folder).
+  function hotspotFields(spot) {
+    const fields = { detector: `/^${escapeRegex(spot.detector)}$/` };
+    if (spot.hasFile) fields.file = `/(^|[\\\\/])${escapeRegex(spot.fileName)}$/`;
+    return fields;
+  }
+
   return {
     hash, str, parseTimestamp, sourceMeta, normalizeFinding, stripInternal,
     parseFindings, assignIds, escapeHtml, safeUrl,
@@ -485,5 +514,6 @@
     isProtected, planPrune, ruleFromSpec, describeRule, parseRules,
     groupBySecret, summarizeGroup, mergeRecords,
     toNdjson, toJsonArray, maskSecret, csvCell, toCsv, buildReviewFile, isReviewFile, applyReviewFile, slugify,
+    basename, hotspots, hotspotFields,
   };
 });
