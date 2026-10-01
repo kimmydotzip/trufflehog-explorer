@@ -14,26 +14,19 @@ You can use online version here: [**TruffleHog Explorer**](gonzosint.github.io/t
 
 ## 🚀 Features
 
-- **Intuitive UI/UX:** Beautiful pastel theme with smooth navigation.
-- **Powerful Filtering:**
-  - Filter findings by repository, detector type, and uploaded file.
-  - Flexible date range selection with a calendar picker.
-  - Verification status categorization for effective review.
-  - Advanced search capabilities for faster identification.
-- **Batch Operations:**
-  - Verify or reject multiple findings with a single click.
-  - Toggle visibility of rejected results for a streamlined view.
-  - Bulk processing to manage large datasets efficiently.
-- **Export Capabilities:**
-  - Export verified secrets or filtered findings effortlessly.
-  - Save and load session backups for continuity.
-  - Generate reports in multiple formats (JSON, CSV).
-- **Dynamic Sorting:**
-  - Sort results by repository, date, or verification status.
-  - Customizable sorting preferences for a personalized experience.
+- **Handles noisy scans:** built for full scans run without verification, where most findings are false positives.
+- **Pattern filters on every field:** detector, file path, repository, secret value, author, commit, decoder, extra data and source file. Each field supports wildcards, regex and exclusions (see [Filter syntax](#-filter-syntax)).
+- **Bulk pruning with reasons:** prune everything matching the current filters. Each pruned finding keeps the reason it was pruned, and you can restore findings at any time. TruffleHog-verified and confirmed findings are protected from bulk pruning.
+- **Reusable prune rules:** save the current filters as a named rule, apply one or all rules to a new scan, and export or import rules as JSON.
+- **Noise hotspots:** a ranked list of detector + file name pairs with the most kept findings (for example `Github` in `yarn.lock`), each with one-click Filter and Prune.
+- **Group by secret:** one card per unique detector + secret value. Confirm or prune every occurrence at once.
+- **Cross-reference a verified scan:** load a full scan, then add a verified-only scan. Matching locations are merged and marked verified.
+- **Versions:** save the result of a review pass as downloadable kept and pruned NDJSON files plus a review file.
+- **Exports:** kept, pruned, filtered or verified/confirmed findings as NDJSON (TruffleHog format, re-loadable), a JSON array, or CSV (secrets masked).
+- **Secrets masked by default:** reveal or copy a secret on each card, or reveal them all at once.
+- **Review UX:** active filter chips, helpful empty states, page size selector, statistics (kept, pruned, confirmed, unique secrets, verification errors) and the `/` shortcut to jump to the filters.
 
 ---
-
 ## 📥 Installation & Usage
 
 
@@ -54,26 +47,56 @@ $ open index.html
 
 ## 📂 How to Use
 
-1. **Upload TruffleHog JSON Findings:**
-   - Click on the **"Load Data"** section and select your `.json` files from [TruffleHog](https://github.com/trufflesecurity/trufflehog) output.
-   - Multiple files are supported.
-2. **Apply Filters:**
-   - Choose filters such as repository, detector type, and verification status.
-   - Utilize the date range picker to narrow down findings.
-   - Leverage the search function to locate specific findings quickly.
-3. **Review Findings:**
-   - Click on a finding to expand and view its details.
-   - Use the action buttons to verify or reject findings.
-   - Add comments and annotations for better tracking.
-4. **Export Results:**
-   - Export verified or filtered findings for reporting.
-   - Save session data for future review and analysis.
-5. **Save Your Progress:**
-   - Save your session and resume later without losing any progress.
-   - Automatic backup feature to prevent data loss.
+### Recommended workflow
 
+1. **Run TruffleHog twice** (example for a GitHub org):
+   ```bash
+   trufflehog github --org=<org> --json --no-verification > all_verify_off.json
+   trufflehog github --org=<org> --json --results=verified > all_only_verified.json
+   ```
+2. **Load the full scan** in **Load Data**.
+3. **Cross-reference verified results:** tick **Add to current data (cross-reference)** and load the verified-only scan. Matching findings are marked verified, which also protects them from bulk pruning.
+4. **Prune the noise:**
+   - Start with **Noise hotspots** and use **Prune** on detector + file pairs that are clearly false positives (lockfiles, test fixtures and so on).
+   - Or build filters yourself (for example File path `*.lock`), check the count, then click **Prune Filtered**. You are shown the number of findings to prune and asked for a reason.
+   - Use **Save Filters as Rule** to reuse the filters on the next scan.
+5. **Review what's left:** switch to **Group by Secret** to review each unique secret once, and confirm true positives.
+6. **Save a version:** click **Save Version…** to download:
+   - `*_kept.ndjson`: the findings that remain, in TruffleHog format
+   - `*_pruned.ndjson`: what was removed
+   - `*_review.json`: decisions and rules, without secrets
+
+   Load the kept file later to continue from the pruned result, or load the original scan together with the review file to restore every decision.
+
+### 🔎 Filter syntax
+
+| Pattern | Meaning |
+| --- | --- |
+| `terraform` | Plain text matches anywhere in the value |
+| `*.lock`, `tok_?` | `*` matches any characters, `?` matches one character; wildcard patterns must match the whole value |
+| `/^AKIA[0-9A-Z]{16}$/` | Regular expression |
+| `!*.lock` | Exclude matches (works with any pattern type) |
+| `AWS, Azure*` | Comma-separated patterns: the value must match any include pattern and no exclude pattern |
+
+All patterns are case-insensitive. Filters on different fields are combined (all must match). The **Extra data** field matches `key=value` pairs from TruffleHog's `ExtraData`, for example `token_type=*`.
+
+### Review state and privacy
+
+- Everything runs in your browser; no data is uploaded anywhere.
+- Prune and confirm decisions, rules and version summaries are saved in the browser's `localStorage`. Findings and secrets are never stored there.
+- Review files and CSV exports contain no secret values. NDJSON and JSON exports keep the original TruffleHog records, including secrets, so handle them like the scan output.
+- If you keep scan output inside this repository, put it in `data/`, which is git-ignored.
 
 ---
 
+## 🧪 Development
+
+The app is static with no build step. Core logic lives in `js/core.js` (shared by the browser and the tests) and the UI in `js/app.js`. Run the unit tests with Node.js 18+:
+
+```bash
+$ npm test
+```
+
+---
 **Happy Securing! 🔒**
 
