@@ -165,12 +165,15 @@
     const out = [];
     let cur = '';
     let inRegex = false;
+    let inClass = false; // '/' inside [...] does not end a regex, as in JS regex literals
     for (let i = 0; i < s.length; i++) {
       const ch = s[i];
       if (inRegex) {
         cur += ch;
         if (ch === '\\' && i + 1 < s.length) cur += s[++i];
-        else if (ch === '/') inRegex = false;
+        else if (ch === '[') inClass = true;
+        else if (ch === ']') inClass = false;
+        else if (ch === '/' && !inClass) inRegex = false;
         continue;
       }
       if (ch === ',') {

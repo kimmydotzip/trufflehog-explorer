@@ -14,6 +14,7 @@ test('splitPatterns keeps commas inside regex tokens', () => {
   assert.deepEqual(C.splitPatterns('/a{1,2}/, !x'), ['/a{1,2}/', '!x']);
   assert.deepEqual(C.splitPatterns('!/a,b/'), ['!/a,b/']);
   assert.deepEqual(C.splitPatterns('/tmp, foo'), ['/tmp', 'foo']);
+  assert.deepEqual(C.splitPatterns('/[a/b,]x/, y'), ['/[a/b,]x/', 'y']);
 });
 
 test('glob patterns match the whole value, case-insensitively', () => {
