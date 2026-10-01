@@ -1,0 +1,8 @@
+{
+  "name": "trufflehog-explorer",
+  "private": true,
+  "description": "Static browser app for reviewing TruffleHog JSON output. No build step or runtime dependencies.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

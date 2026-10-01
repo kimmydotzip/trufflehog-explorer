@@ -471,3 +471,34 @@ header h1 {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/*********************************
+ * REVIEW UI ADDITIONS
+ *********************************/
+.card-actions {
+  display: flex;
+  gap: 10px;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.tag-confirmed {
+  background-color: #b9dcc4;
+  color: #2f4f3a;
+}
+.controls-container input[type="text"].invalid-filter {
+  border-color: #cc4b4b;
+  background-color: #fff5f5;
+}
+.pager {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+}
+.pager-info {
+  color: #666;
+  font-weight: 500;
+}

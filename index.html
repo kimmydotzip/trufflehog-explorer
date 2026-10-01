@@ -74,8 +74,8 @@
           </div>
           <div>
             <label for="filterFileName">
-              Filter by Uploaded File:
-              <span class="info-icon" title="Which JSON file the finding originated from.">?</span>
+              Filter by Source File:
+              <span class="info-icon" title="Which loaded JSON file the finding came from.">?</span>
             </label>
             <select id="filterFileName">
               <option value="">All</option>
@@ -84,7 +84,7 @@
           <div>
             <label for="filterVerified">
               Filter by Verified:
-              <span class="info-icon" title="Show only Verified or Unverified secrets.">?</span>
+              <span class="info-icon" title="TruffleHog's own verification result (the Verified field in the scan output).">?</span>
             </label>
             <select id="filterVerified">
               <option value="">All</option>
@@ -146,9 +146,9 @@
             <button class="btn btn-danger" id="rejectAllBtn">
               <i class="bi bi-x-circle"></i> &nbspReject All Filtered
             </button>
-            <!-- Button: Mark All Filtered Verified -->
-            <button class="btn btn-secondary" id="verifyAllBtn">
-              <i class="bi bi-check-circle"></i> &nbspVerify All Filtered
+            <!-- Button: Mark All Filtered Confirmed -->
+            <button class="btn btn-secondary" id="verifyAllBtn" title="Mark every filtered finding as a confirmed true positive">
+              <i class="bi bi-check-circle"></i> &nbspConfirm All Filtered
             </button>
           </div>
         </div>
@@ -159,7 +159,7 @@
           <div class="buttons-group">
             <!-- Button: Show/Hide Rejected -->
             <button class="btn btn-info" id="toggleRejectedBtn">
-              <i class="bi bi-eye-slash"></i> &nbspHide Rejected
+              <i class="bi bi-eye"></i> &nbspShow Rejected
             </button>
             <!-- Expand/Collapse All Cards -->
             <button class="btn btn-info" id="expandAllBtn">
@@ -174,7 +174,7 @@
           <div class="buttons-group">
             <!-- Button: Export Verified -->
             <button class="btn btn-warning" id="exportVerifiedBtn">
-              <i class="bi bi-download"></i> &nbspExport Verified
+              <i class="bi bi-download"></i> &nbspExport Verified/Confirmed
             </button>
             <!-- Button: Export Filtered -->
             <button class="btn btn-warning" id="exportFilteredBtn">
@@ -266,6 +266,7 @@
     </div><!-- .main-content -->
   </div><!-- .layout -->
 
+  <script src="js/core.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

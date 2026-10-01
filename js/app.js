@@ -1,760 +1,427 @@
-/**************************************************************
- * Initialize Flatpickr in "range" mode
- **************************************************************/
-let selectedDateRange = [null, null];
-flatpickr("#filterDateRange", {
-  mode: "range",
-  dateFormat: "Y-m-d",
-  onClose: function(selectedDates) {
-    selectedDateRange = selectedDates;
-    applyFilters();
-  }
-});
+'use strict';
 
-/**************************************************************
- * DOM ELEMENTS
- **************************************************************/
-const trufflehogFile = document.getElementById('trufflehogFile');
-const sessionFile = document.getElementById('sessionFile'); // for loading session
+(function () {
+  const C = window.THCore;
+  const $ = (id) => document.getElementById(id);
+  const REVIEW_KEY = 'thReview.v2';
 
-const toggleRejectedBtn = document.getElementById('toggleRejectedBtn');
-const rejectAllBtn = document.getElementById('rejectAllBtn');
-const verifyAllBtn = document.getElementById('verifyAllBtn');
-const exportVerifiedBtn = document.getElementById('exportVerifiedBtn');
-const exportFilteredBtn = document.getElementById('exportFilteredBtn');
-const expandAllBtn = document.getElementById('expandAllBtn');
-const clearFiltersBtn = document.getElementById('clearFiltersBtn');
-const saveSessionBtn = document.getElementById('saveSessionBtn'); // for saving session
-
-// Filter elements
-const filterRepository = document.getElementById('filterRepository');
-const filterDetector = document.getElementById('filterDetector');
-const filterFileName = document.getElementById('filterFileName');
-const filterVerified = document.getElementById('filterVerified');
-const filterRegex = document.getElementById('filterRegex');
-const sortBy = document.getElementById('sortBy');
-
-// Stats elements
-const totalFindingsSpan = document.getElementById('totalFindings');
-const uniqueRepositoriesSpan = document.getElementById('uniqueRepositories');
-const uniqueDetectorsSpan = document.getElementById('uniqueDetectors');
-const uniqueFilesSpan = document.getElementById('uniqueFiles');
-const uniqueAuthorsSpan = document.getElementById('uniqueAuthors');
-const firstSeenSpan = document.getElementById('firstSeen');
-const lastSeenSpan = document.getElementById('lastSeen');
-const verificationBar = document.getElementById('verificationBar');
-const verifiedCountSpan = document.getElementById('verifiedCount');
-const unverifiedCountSpan = document.getElementById('unverifiedCount');
-const rejectedCountSpan = document.getElementById('rejectedCount');
-const filteredCountDisplay = document.getElementById('filteredCountDisplay');
-
-const resultsContainer = document.getElementById('results-container');
-const errorLog = document.getElementById('errorLog');
-
-// Full results in memory
-let allResults = [];
-// Current filtered subset
-let currentFilteredResults = [];
-
-// Windowing variables - only one batch rendered at a time
-let windowBatchSize = 50;
-let currentBatchIndex = 0;
-let totalBatches = 0;
-
-// statusesMap: { [uniqueId]: { Verified: bool, Rejected: bool } }
-let statusesMap = {};
-
-// Toggling Rejected display
-let hideRejected = true;
-
-// Expand/Collapse All toggle
-let expandAllState = false;
-
-/**************************************************************
- * RESTORE STATUSES FROM LOCAL STORAGE (if any)
- **************************************************************/
-document.addEventListener('DOMContentLoaded', () => {
-  try {
-    const stored = localStorage.getItem('thStatuses');
-    if (stored) {
-      statusesMap = JSON.parse(stored);
-    }
-  } catch (e) {
-    console.warn('Error reading localStorage for statuses:', e);
-  }
-});
-
-/**************************************************************
- * FILE UPLOAD HANDLER (TruffleHog data)
- **************************************************************/
-trufflehogFile.addEventListener('change', async (event) => {
-  resultsContainer.innerHTML = '';
-  errorLog.innerHTML = '';
-  allResults = [];
-  currentFilteredResults = [];
-
-  // Reset filter dropdowns
-  filterRepository.innerHTML = '<option value="">All</option>';
-  filterDetector.innerHTML = '<option value="">All</option>';
-  filterFileName.innerHTML = '<option value="">All</option>';
-
-  const files = event.target.files;
-  const parsePromises = [];
-
-  for (const file of files) {
-    const reader = new FileReader();
-    const promise = new Promise((resolve) => {
-      reader.onload = (e) => {
-        const text = e.target.result;
-        const lines = text.split('\n').map(l => l.trim()).filter(l => l !== '');
-
-        const repoSet = new Set();
-        const detSet = new Set();
-        const fileSet = new Set();
-
-        lines.forEach((line, idx) => {
-          // skip lines that are not valid JSON
-          if (!line.startsWith('{') && !line.startsWith('[')) return;
-          try {
-            const parsed = JSON.parse(line);
-
-            // Create a short unique ID
-            const shortId = 'id' + Math.random().toString(36).substr(2, 6);
-
-            // Restore Verified/Rejected status if it exists
-            const oldStatus = statusesMap[shortId] || { Verified: false, Rejected: false };
-            parsed.Verified = oldStatus.Verified;
-            parsed.Rejected = oldStatus.Rejected;
-
-            parsed._id = shortId;
-            parsed._uploadedFile = file.name;
-            allResults.push(parsed);
-
-            // Track possible filter values
-            const repo = getNestedValue(parsed, 'SourceMetadata.Data.Github.repository');
-            if (repo) repoSet.add(repo);
-
-            const det = parsed.DetectorName;
-            if (det) detSet.add(det);
-
-            fileSet.add(file.name);
-
-          } catch (err) {
-            console.error(`Error parsing JSON in ${file.name} at line ${idx + 1}:`, err);
-            const errDiv = document.createElement('div');
-            errDiv.classList.add('error-message');
-            errDiv.textContent = `Error parsing JSON line ${idx + 1} in ${file.name}: ${err.message}`;
-            errorLog.appendChild(errDiv);
-          }
-        });
-
-        // Update dropdowns
-        repoSet.forEach(r => addOptionIfNotExists(filterRepository, r));
-        detSet.forEach(d => addOptionIfNotExists(filterDetector, d));
-        fileSet.forEach(f => addOptionIfNotExists(filterFileName, f));
-
-        resolve();
-      };
-      reader.onerror = () => {
-        const errDiv = document.createElement('div');
-        errDiv.classList.add('error-message');
-        errDiv.textContent = `Error reading file: ${file.name}`;
-        errorLog.appendChild(errDiv);
-        resolve();
-      };
-      reader.readAsText(file);
-    });
-    parsePromises.push(promise);
-  }
-
-  Promise.all(parsePromises).then(() => {
-    updateStats();
-    applyFilters();
-  });
-});
-
-/**************************************************************
- * NEW CODE: LOAD SESSION FILE
- **************************************************************/
-sessionFile.addEventListener('change', async (event) => {
-  const files = event.target.files;
-  if (!files || !files.length) return;
-
-  const file = files[0];
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      const data = JSON.parse(e.target.result);
-      if (!Array.isArray(data)) {
-        throw new Error('Session file is not an array of findings.');
-      }
-
-      // Reset everything
-      allResults = [];
-      currentFilteredResults = [];
-      resultsContainer.innerHTML = '';
-      errorLog.innerHTML = '';
-
-      // Reset filter dropdowns
-      filterRepository.innerHTML = '<option value="">All</option>';
-      filterDetector.innerHTML = '<option value="">All</option>';
-      filterFileName.innerHTML = '<option value="">All</option>';
-
-      // Rebuild local data + statuses
-      data.forEach((item) => {
-        if (!item._id) {
-          // If somehow missing an ID, generate one
-          item._id = 'id' + Math.random().toString(36).substr(2, 6);
-        }
-        statusesMap[item._id] = {
-          Verified: !!item.Verified,
-          Rejected: !!item.Rejected
-        };
-        allResults.push(item);
-
-        // Add filter options
-        const repo = getNestedValue(item, 'SourceMetadata.Data.Github.repository');
-        if (repo) addOptionIfNotExists(filterRepository, repo);
-
-        const det = item.DetectorName;
-        if (det) addOptionIfNotExists(filterDetector, det);
-
-        const fName = item._uploadedFile;
-        if (fName) addOptionIfNotExists(filterFileName, fName);
-      });
-
-      // Store statuses in localStorage
-      storeStatuses();
-
-      // Done, update UI
-      updateStats();
-      applyFilters();
-      alert('Session loaded successfully!');
-    } catch (err) {
-      const errDiv = document.createElement('div');
-      errDiv.classList.add('error-message');
-      errDiv.textContent = `Error loading session file: ${err.message}`;
-      errorLog.appendChild(errDiv);
-    }
+  const el = {
+    trufflehogFile: $('trufflehogFile'),
+    sessionFile: $('sessionFile'),
+    filterRepository: $('filterRepository'),
+    filterDetector: $('filterDetector'),
+    filterFileName: $('filterFileName'),
+    filterVerified: $('filterVerified'),
+    filterDateRange: $('filterDateRange'),
+    filterRegex: $('filterRegex'),
+    sortBy: $('sortBy'),
+    clearFiltersBtn: $('clearFiltersBtn'),
+    rejectAllBtn: $('rejectAllBtn'),
+    confirmAllBtn: $('verifyAllBtn'),
+    toggleRejectedBtn: $('toggleRejectedBtn'),
+    expandAllBtn: $('expandAllBtn'),
+    exportVerifiedBtn: $('exportVerifiedBtn'),
+    exportFilteredBtn: $('exportFilteredBtn'),
+    saveSessionBtn: $('saveSessionBtn'),
+    totalFindings: $('totalFindings'),
+    uniqueRepositories: $('uniqueRepositories'),
+    uniqueDetectors: $('uniqueDetectors'),
+    uniqueFiles: $('uniqueFiles'),
+    uniqueAuthors: $('uniqueAuthors'),
+    firstSeen: $('firstSeen'),
+    lastSeen: $('lastSeen'),
+    rejectedCount: $('rejectedCount'),
+    verifiedCount: $('verifiedCount'),
+    unverifiedCount: $('unverifiedCount'),
+    verificationBar: $('verificationBar'),
+    filteredCountDisplay: $('filteredCountDisplay'),
+    results: $('results-container'),
+    errorLog: $('errorLog'),
   };
-  reader.readAsText(file);
-});
-/**************************************************************/
 
-function addOptionIfNotExists(selectEl, value) {
-  for (let i = 0; i < selectEl.options.length; i++) {
-    if (selectEl.options[i].value === value) return;
-  }
-  const opt = document.createElement('option');
-  opt.value = value;
-  opt.textContent = value;
-  selectEl.appendChild(opt);
-}
+  const state = {
+    records: [],
+    filtered: [],
+    page: 0,
+    pageSize: 50,
+    hideRejected: true,
+    collapsed: false,
+    dateRange: [null, null],
+  };
 
-/**************************************************************
- * STORE STATUSES
- **************************************************************/
-function storeStatuses() {
-  try {
-    localStorage.setItem('thStatuses', JSON.stringify(statusesMap));
-  } catch (e) {
-    console.warn('Unable to store statuses:', e);
-  }
-}
+  /* ---------------- DOM helpers ---------------- */
 
-/**************************************************************
- * UPDATE STATS
- **************************************************************/
-function updateStats() {
-  totalFindingsSpan.textContent = allResults.length;
-
-  const repos = new Set(
-    allResults.map(r => getNestedValue(r, 'SourceMetadata.Data.Github.repository')).filter(Boolean)
-  );
-  uniqueRepositoriesSpan.textContent = repos.size;
-
-  const dets = new Set(allResults.map(r => r.DetectorName).filter(Boolean));
-  uniqueDetectorsSpan.textContent = dets.size;
-
-  const files = new Set(allResults.map(r => r._uploadedFile).filter(Boolean));
-  uniqueFilesSpan.textContent = files.size;
-
-  const authors = new Set(
-    allResults.map(r => getNestedValue(r, 'SourceMetadata.Data.Github.email')).filter(Boolean)
-  );
-  uniqueAuthorsSpan.textContent = authors.size;
-
-  const timestamps = allResults
-    .map(r => getNestedValue(r, 'SourceMetadata.Data.Github.timestamp'))
-    .map(ts => ts ? new Date(ts).getTime() : null)
-    .filter(x => x && !isNaN(x));
-  if (timestamps.length) {
-    const min = Math.min(...timestamps);
-    const max = Math.max(...timestamps);
-    firstSeenSpan.textContent = new Date(min).toLocaleDateString();
-    lastSeenSpan.textContent = new Date(max).toLocaleDateString();
-  } else {
-    firstSeenSpan.textContent = 'N/A';
-    lastSeenSpan.textContent = 'N/A';
-  }
-
-  const verifiedCount = allResults.filter(r => r.Verified).length;
-  const unverifiedCount = allResults.filter(r => !r.Verified).length;
-  verifiedCountSpan.textContent = verifiedCount;
-  unverifiedCountSpan.textContent = unverifiedCount;
-
-  const rejectedCount = allResults.filter(r => r.Rejected).length;
-  rejectedCountSpan.textContent = rejectedCount;
-
-  const total = verifiedCount + unverifiedCount;
-  if (total === 0) {
-    verificationBar.style.width = '0%';
-  } else {
-    const pct = (verifiedCount / total) * 100;
-    verificationBar.style.width = pct.toFixed(1) + '%';
-  }
-}
-
-/**************************************************************
- * FILTER & SORT & RENDER
- **************************************************************/
-[
-  filterRepository, filterDetector, filterFileName, filterVerified, sortBy
-].forEach(el => el.addEventListener('change', applyFilters));
-
-// Add regex filter with debouncing and visual feedback
-let regexTimeout;
-filterRegex.addEventListener('input', () => {
-  clearTimeout(regexTimeout);
-  regexTimeout = setTimeout(() => {
-    applyFilters();
-    // Add visual feedback if regex is active
-    if (filterRegex.value.trim()) {
-      filterRegex.classList.add('active-filter');
-    } else {
-      filterRegex.classList.remove('active-filter');
+  function h(tag, props, ...children) {
+    const node = document.createElement(tag);
+    if (props) {
+      for (const [k, v] of Object.entries(props)) {
+        if (v === undefined || v === null || v === false) continue;
+        if (k === 'class') node.className = v;
+        else if (k === 'text') node.textContent = v;
+        else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+        else node.setAttribute(k, v === true ? '' : v);
+      }
     }
-  }, 300); // Debounce 300ms
-});
+    for (const c of children.flat()) {
+      if (c === undefined || c === null || c === false) continue;
+      node.append(c instanceof Node ? c : String(c));
+    }
+    return node;
+  }
 
-function applyFilters() {
-  const repoVal = filterRepository.value;
-  const detVal = filterDetector.value;
-  const fileVal = filterFileName.value;
-  const verVal = filterVerified.value;
-  const regexVal = filterRegex.value.trim();
+  const icon = (name) => h('i', { class: `bi bi-${name}` });
 
-  // Compile regex if provided
-  let regexPattern = null;
-  if (regexVal) {
+  function logError(message) {
+    el.errorLog.append(h('div', { class: 'error-message', text: message }));
+  }
+
+  function download(content, filename, type = 'application/json') {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const a = h('a', { href: url, download: filename });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /* ---------------- Review state ---------------- */
+
+  function loadReviewStore() {
     try {
-      regexPattern = new RegExp(regexVal, 'i'); // Case-insensitive by default
+      return JSON.parse(localStorage.getItem(REVIEW_KEY) || '{}');
+    } catch {
+      return {};
+    }
+  }
+
+  function saveReviewStore() {
+    const store = loadReviewStore();
+    for (const r of state.records) {
+      if (r.review.confirmed || r.review.rejected) store[r.id] = { ...r.review };
+      else delete store[r.id];
+    }
+    try {
+      localStorage.setItem(REVIEW_KEY, JSON.stringify(store));
     } catch (e) {
-      console.warn('Invalid regex pattern:', e);
-      regexPattern = null;
+      console.warn('Unable to persist review state:', e);
     }
   }
 
-  let [startTime, endTime] = [null, null];
-  if (selectedDateRange.length === 2 && selectedDateRange[0] && selectedDateRange[1]) {
-    startTime = selectedDateRange[0].getTime();
-    endTime = selectedDateRange[1].getTime();
-    if (startTime > endTime) {
-      const tmp = startTime;
-      startTime = endTime;
-      endTime = tmp;
-    }
+  function setReview(records, patch) {
+    for (const r of records) Object.assign(r.review, patch);
+    saveReviewStore();
+    refresh();
   }
 
-  const filtered = allResults.filter(r => {
-    // Hide rejected if toggled
-    if (hideRejected && r.Rejected) return false;
+  /* ---------------- Loading ---------------- */
 
-    let verifiedMatch = true;
-    if (verVal === 'true') verifiedMatch = (r.Verified === true);
-    if (verVal === 'false') verifiedMatch = (r.Verified === false);
+  function setRecords(records) {
+    C.assignIds(records);
+    const store = loadReviewStore();
+    for (const r of records) {
+      const saved = store[r.id] || {};
+      r.review = { confirmed: !!saved.confirmed, rejected: !!saved.rejected, ...(r.review || {}) };
+    }
+    state.records = records;
+    rebuildOptions();
+    refresh();
+  }
 
-    const repoMatch = !repoVal || (getNestedValue(r, 'SourceMetadata.Data.Github.repository') === repoVal);
-    const detMatch = !detVal || (r.DetectorName === detVal);
-    const fileMatch = !fileVal || (r._uploadedFile === fileVal);
-
-    const tsStr = getNestedValue(r, 'SourceMetadata.Data.Github.timestamp');
-    const tsMs = tsStr ? new Date(tsStr).getTime() : null;
-    const dateMatch = (!startTime || (tsMs && tsMs >= startTime)) &&
-                      (!endTime || (tsMs && tsMs <= endTime));
-
-    // Regex match on Raw field
-    const regexMatch = !regexPattern || (r.Raw && regexPattern.test(r.Raw));
-
-    return verifiedMatch && repoMatch && detMatch && fileMatch && dateMatch && regexMatch;
-  });
-
-  // Sort results
-  const sortValue = sortBy.value;
-  if (sortValue) {
-    filtered.sort((a, b) => {
-      const getTime = (item) => {
-        const t = getNestedValue(item, 'SourceMetadata.Data.Github.timestamp');
-        return t ? new Date(t).getTime() : 0;
-      };
-      const repoA = getNestedValue(a, 'SourceMetadata.Data.Github.repository') || '';
-      const repoB = getNestedValue(b, 'SourceMetadata.Data.Github.repository') || '';
-
-      switch (sortValue) {
-        case 'dateAsc':    return getTime(a) - getTime(b);
-        case 'dateDesc':   return getTime(b) - getTime(a);
-        case 'repoAsc':    return repoA.localeCompare(repoB);
-        case 'repoDesc':   return repoB.localeCompare(repoA);
-        case 'verifiedAsc':
-          // move verified to top => so the 'lowest' is unverified
-          return (b.Verified ? 1 : 0) - (a.Verified ? 1 : 0);
-        case 'verifiedDesc':
-          // move unverified to top => so the 'lowest' is verified
-          return (a.Verified ? 1 : 0) - (b.Verified ? 1 : 0);
-        default:
-          return 0;
+  async function parseFiles(fileList) {
+    const records = [];
+    for (const file of fileList) {
+      try {
+        const { records: recs, errors } = C.parseFindings(await file.text(), file.name);
+        errors.forEach((e) => logError(`${file.name}${e.line ? ` line ${e.line}` : ''}: ${e.message}`));
+        records.push(...recs);
+      } catch (e) {
+        logError(`Error reading ${file.name}: ${e.message}`);
       }
+    }
+    return records;
+  }
+
+  el.trufflehogFile.addEventListener('change', async (event) => {
+    const files = [...event.target.files];
+    if (!files.length) return;
+    el.errorLog.replaceChildren();
+    setRecords(await parseFiles(files));
+    event.target.value = '';
+  });
+
+  // Session format: JSON array of findings annotated with Rejected/Confirmed (legacy compatible).
+  el.sessionFile.addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    el.errorLog.replaceChildren();
+    try {
+      const data = JSON.parse(await file.text());
+      if (!Array.isArray(data)) throw new Error('Session file is not an array of findings.');
+      const records = data.map((item) => {
+        const rec = C.normalizeFinding(C.stripInternal(item), item._uploadedFile || file.name);
+        rec.review = { confirmed: !!item.Confirmed, rejected: !!item.Rejected };
+        return rec;
+      });
+      setRecords(records);
+      saveReviewStore();
+    } catch (e) {
+      logError(`Error loading session file: ${e.message}`);
+    }
+    event.target.value = '';
+  });
+
+  function rebuildOptions() {
+    const fill = (select, values) => {
+      const current = select.value;
+      select.replaceChildren(h('option', { value: '', text: 'All' }),
+        ...[...values].filter(Boolean).sort().map((v) => h('option', { value: v, text: v })));
+      select.value = values.has(current) ? current : '';
+    };
+    fill(el.filterRepository, new Set(state.records.map((r) => r.repository)));
+    fill(el.filterDetector, new Set(state.records.map((r) => r.detector)));
+    fill(el.filterFileName, new Set(state.records.flatMap((r) => r.sourceFiles)));
+  }
+
+  /* ---------------- Stats ---------------- */
+
+  function updateStats() {
+    const recs = state.records;
+    const uniq = (fn) => new Set(recs.map(fn).filter(Boolean)).size;
+    el.totalFindings.textContent = recs.length;
+    el.uniqueRepositories.textContent = uniq((r) => r.repository);
+    el.uniqueDetectors.textContent = uniq((r) => r.detector);
+    el.uniqueFiles.textContent = new Set(recs.flatMap((r) => r.sourceFiles)).size;
+    el.uniqueAuthors.textContent = uniq((r) => r.email);
+
+    const times = recs.map((r) => r.timestamp).filter((t) => t !== null);
+    el.firstSeen.textContent = times.length ? new Date(Math.min(...times)).toLocaleDateString() : 'N/A';
+    el.lastSeen.textContent = times.length ? new Date(Math.max(...times)).toLocaleDateString() : 'N/A';
+
+    const verified = recs.filter((r) => r.verified).length;
+    el.verifiedCount.textContent = verified;
+    el.unverifiedCount.textContent = recs.length - verified;
+    el.rejectedCount.textContent = recs.filter((r) => r.review.rejected).length;
+    el.verificationBar.style.width = recs.length ? ((verified / recs.length) * 100).toFixed(1) + '%' : '0%';
+  }
+
+  /* ---------------- Filtering ---------------- */
+
+  function compileRegex() {
+    const value = el.filterRegex.value.trim();
+    el.filterRegex.classList.toggle('active-filter', !!value);
+    el.filterRegex.classList.remove('invalid-filter');
+    if (!value) return null;
+    try {
+      return new RegExp(value, 'i');
+    } catch {
+      el.filterRegex.classList.add('invalid-filter');
+      return null;
+    }
+  }
+
+  function applyFilters() {
+    const repo = el.filterRepository.value;
+    const det = el.filterDetector.value;
+    const src = el.filterFileName.value;
+    const ver = el.filterVerified.value;
+    const regex = compileRegex();
+
+    let [start, end] = state.dateRange;
+    start = start ? start.getTime() : null;
+    end = end ? end.getTime() + 86400000 - 1 : null; // inclusive end date
+
+    const out = state.records.filter((r) => {
+      if (state.hideRejected && r.review.rejected) return false;
+      if (ver === 'true' && !r.verified) return false;
+      if (ver === 'false' && r.verified) return false;
+      if (repo && r.repository !== repo) return false;
+      if (det && r.detector !== det) return false;
+      if (src && !r.sourceFiles.includes(src)) return false;
+      if (start !== null && (r.timestamp === null || r.timestamp < start)) return false;
+      if (end !== null && (r.timestamp === null || r.timestamp > end)) return false;
+      if (regex && !regex.test(r.secret)) return false;
+      return true;
     });
-  }
 
-  currentFilteredResults = filtered;
-  currentBatchIndex = 0;
-  totalBatches = Math.ceil(filtered.length / windowBatchSize);
-  renderCurrentBatch();
-  updateFilteredCountDisplay();
-}
-
-function updateFilteredCountDisplay() {
-  const start = currentBatchIndex * windowBatchSize + 1;
-  const end = Math.min((currentBatchIndex + 1) * windowBatchSize, currentFilteredResults.length);
-  filteredCountDisplay.textContent = `Showing ${start}-${end} / ${currentFilteredResults.length} filtered (${allResults.length} total)`;
-}
-
-function renderCurrentBatch() {
-  resultsContainer.innerHTML = '';
-
-  if (!currentFilteredResults.length) {
-    resultsContainer.innerHTML = '<p>No results match the current filters.</p>';
-    return;
-  }
-
-  const start = currentBatchIndex * windowBatchSize;
-  const end = Math.min(start + windowBatchSize, currentFilteredResults.length);
-
-  for (let i = start; i < end; i++) {
-    const card = createResultCard(currentFilteredResults[i]);
-    resultsContainer.appendChild(card);
-  }
-
-  addBatchNavigation();
-}
-
-function addBatchNavigation() {
-  if (totalBatches <= 1) return;
-
-  const nav = document.createElement('div');
-  nav.style.cssText = 'display: flex; justify-content: center; gap: 10px; margin-top: 20px; align-items: center;';
-
-  const prevBtn = document.createElement('button');
-  prevBtn.className = 'btn btn-info';
-  prevBtn.innerHTML = '<i class="bi bi-chevron-left"></i> Previous';
-  prevBtn.disabled = currentBatchIndex === 0;
-  prevBtn.onclick = () => {
-    if (currentBatchIndex > 0) {
-      currentBatchIndex--;
-      renderCurrentBatch();
-      updateFilteredCountDisplay();
-      window.scrollTo(0, 0);
-    }
-  };
-
-  const info = document.createElement('span');
-  info.style.cssText = 'color: #666; font-weight: 500;';
-  info.textContent = `Page ${currentBatchIndex + 1} of ${totalBatches}`;
-
-  const nextBtn = document.createElement('button');
-  nextBtn.className = 'btn btn-info';
-  nextBtn.innerHTML = 'Next <i class="bi bi-chevron-right"></i>';
-  nextBtn.disabled = currentBatchIndex >= totalBatches - 1;
-  nextBtn.onclick = () => {
-    if (currentBatchIndex < totalBatches - 1) {
-      currentBatchIndex++;
-      renderCurrentBatch();
-      updateFilteredCountDisplay();
-      window.scrollTo(0, 0);
-    }
-  };
-
-  nav.appendChild(prevBtn);
-  nav.appendChild(info);
-  nav.appendChild(nextBtn);
-  resultsContainer.appendChild(nav);
-}
-
-/**************************************************************
- * CREATE RESULT CARD
- **************************************************************/
-function createResultCard(result) {
-  // By default, all cards are uncollapsed => no "collapsed" class initially
-  const container = document.createElement('div');
-  container.classList.add('result-container');
-
-  // Header
-  const header = document.createElement('div');
-  header.classList.add('result-header');
-
-  // Title
-  const titleDiv = document.createElement('div');
-  titleDiv.classList.add('title');
-  titleDiv.textContent = `Finding ID: ${result._id}`;
-  header.appendChild(titleDiv);
-
-  // Action buttons (in header)
-  const actionsDiv = document.createElement('div');
-  actionsDiv.style.display = 'flex';
-  actionsDiv.style.gap = '10px';
-
-  const rejectBtn = document.createElement('button');
-  rejectBtn.classList.add('btn', 'btn-danger');
-  rejectBtn.innerHTML = '<i class="bi bi-x-circle"></i> &nbspReject';
-  rejectBtn.title = "Reject this finding";
-  rejectBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    result.Rejected = true;
-    statusesMap[result._id] = {
-      Verified: result.Verified,
-      Rejected: true
+    const sorters = {
+      dateAsc: (a, b) => (a.timestamp || 0) - (b.timestamp || 0),
+      dateDesc: (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
+      repoAsc: (a, b) => a.repository.localeCompare(b.repository),
+      repoDesc: (a, b) => b.repository.localeCompare(a.repository),
+      verifiedAsc: (a, b) => Number(b.verified) - Number(a.verified),
+      verifiedDesc: (a, b) => Number(a.verified) - Number(b.verified),
     };
-    storeStatuses();
+    if (sorters[el.sortBy.value]) out.sort(sorters[el.sortBy.value]);
+
+    state.filtered = out;
+    state.page = 0;
+    render();
+  }
+
+  function refresh() {
     updateStats();
+    const page = state.page;
+    applyFilters();
+    // Keep the reviewer on the same page after an action when possible.
+    const maxPage = Math.max(0, Math.ceil(state.filtered.length / state.pageSize) - 1);
+    if (page !== state.page) {
+      state.page = Math.min(page, maxPage);
+      render();
+    }
+  }
+
+  /* ---------------- Rendering ---------------- */
+
+  function render() {
+    const total = state.filtered.length;
+    const startIdx = state.page * state.pageSize;
+    const endIdx = Math.min(startIdx + state.pageSize, total);
+    el.filteredCountDisplay.textContent = total
+      ? `Showing ${startIdx + 1}-${endIdx} / ${total} filtered (${state.records.length} total)`
+      : `Showing 0 / 0 filtered (${state.records.length} total)`;
+
+    if (!total) {
+      el.results.replaceChildren(h('p', {
+        text: state.records.length ? 'No results match the current filters.' : 'Load one or more TruffleHog JSON files to begin.',
+      }));
+      return;
+    }
+    const cards = state.filtered.slice(startIdx, endIdx).map(renderCard);
+    el.results.replaceChildren(...cards, renderPager());
+  }
+
+  function renderPager() {
+    const pages = Math.ceil(state.filtered.length / state.pageSize);
+    if (pages <= 1) return '';
+    const go = (p) => () => {
+      state.page = p;
+      render();
+      window.scrollTo(0, 0);
+    };
+    return h('div', { class: 'pager' },
+      h('button', { class: 'btn btn-info', disabled: state.page === 0, onclick: go(state.page - 1) }, icon('chevron-left'), ' Previous'),
+      h('span', { class: 'pager-info', text: `Page ${state.page + 1} of ${pages}` }),
+      h('button', { class: 'btn btn-info', disabled: state.page >= pages - 1, onclick: go(state.page + 1) }, 'Next ', icon('chevron-right')));
+  }
+
+  function detail(label, value) {
+    return h('div', { class: 'result-detail' }, h('strong', { text: label }), value === '' ? 'N/A' : value);
+  }
+
+  function tag(text, cls) {
+    return h('span', { class: `tag ${cls}`, text });
+  }
+
+  function renderCard(r) {
+    const card = h('div', { class: 'result-container' + (state.collapsed ? ' collapsed' : '') });
+
+    const actions = h('div', { class: 'card-actions' },
+      h('button', {
+        class: 'btn btn-danger', title: r.review.rejected ? 'Restore this finding' : 'Reject this finding as a false positive',
+        onclick: (e) => { e.stopPropagation(); setReview([r], { rejected: !r.review.rejected }); },
+      }, icon(r.review.rejected ? 'arrow-counterclockwise' : 'x-circle'), r.review.rejected ? ' Restore' : ' Reject'),
+      h('button', {
+        class: 'btn btn-secondary', title: 'Mark as a confirmed true positive',
+        onclick: (e) => { e.stopPropagation(); setReview([r], { confirmed: !r.review.confirmed }); },
+      }, icon('check-circle'), r.review.confirmed ? ' Unconfirm' : ' Confirm'));
+
+    const header = h('div', { class: 'result-header', onclick: () => card.classList.toggle('collapsed') },
+      h('div', { class: 'title' }, r.detector || 'Unknown detector',
+        r.verified ? tag('Verified', 'tag-verified') : tag('Unverified', 'tag-unverified'),
+        r.review.confirmed ? tag('Confirmed', 'tag-confirmed') : '',
+        r.review.rejected ? tag('Rejected', 'tag-rejected') : ''),
+      actions);
+
+    const where = r.file ? `${r.file}${r.line ? ':' + r.line : ''}` : r.link;
+    const snippet = r.secret.length > 50 ? r.secret.slice(0, 50) + '…' : r.secret;
+    const summary = h('div', { class: 'summary-line' },
+      h('strong', { text: 'Path: ' }), where || 'N/A', ' — ', h('strong', { text: 'Snippet: ' }), snippet);
+
+    const url = C.safeUrl(r.link);
+    const pathValue = url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', text: where || url }) : (where || '');
+
+    const body = h('div', { class: 'result-body' },
+      detail('Path:', pathValue),
+      detail('Source File:', r.sourceFiles.join(', ')),
+      detail('Repository:', r.repository),
+      detail('Commit:', r.commit),
+      detail('Date:', r.timestampText),
+      detail('Author:', r.email),
+      detail('Detector:', r.detector),
+      detail('Decoder:', r.decoder),
+      detail('Description:', r.description),
+      detail('Verification:', r.verificationError ? `Error: ${r.verificationError}` : (r.verified ? 'Verified by TruffleHog' : 'Not verified')),
+      h('div', { class: 'leaked-container' }, h('strong', { text: 'Leaked Information:' }), '\n', r.secret || 'N/A'));
+
+    card.append(header, summary, body);
+    return card;
+  }
+
+  /* ---------------- Actions ---------------- */
+
+  [el.filterRepository, el.filterDetector, el.filterFileName, el.filterVerified, el.sortBy]
+    .forEach((s) => s.addEventListener('change', applyFilters));
+
+  let regexTimer;
+  el.filterRegex.addEventListener('input', () => {
+    clearTimeout(regexTimer);
+    regexTimer = setTimeout(applyFilters, 300);
+  });
+
+  const datePicker = flatpickr(el.filterDateRange, {
+    mode: 'range',
+    dateFormat: 'Y-m-d',
+    onClose: (dates) => {
+      state.dateRange = dates.length === 2 ? dates : [null, null];
+      applyFilters();
+    },
+  });
+
+  el.clearFiltersBtn.addEventListener('click', () => {
+    for (const s of [el.filterRepository, el.filterDetector, el.filterFileName, el.filterVerified, el.sortBy]) s.value = '';
+    el.filterRegex.value = '';
+    state.dateRange = [null, null];
+    datePicker.clear();
     applyFilters();
   });
-  actionsDiv.appendChild(rejectBtn);
 
-  const verifyBtn = document.createElement('button');
-  verifyBtn.classList.add('btn', 'btn-secondary');
-  verifyBtn.innerHTML = '<i class="bi bi-check-circle"></i> &nbspVerify';
-  verifyBtn.title = "Mark this finding as verified";
-  verifyBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    result.Verified = true;
-    statusesMap[result._id] = {
-      Verified: true,
-      Rejected: result.Rejected
-    };
-    storeStatuses();
-    updateStats();
+  el.rejectAllBtn.addEventListener('click', () => setReview(state.filtered, { rejected: true }));
+  el.confirmAllBtn.addEventListener('click', () => setReview(state.filtered, { confirmed: true }));
+
+  el.toggleRejectedBtn.addEventListener('click', () => {
+    state.hideRejected = !state.hideRejected;
+    el.toggleRejectedBtn.replaceChildren(icon(state.hideRejected ? 'eye' : 'eye-slash'),
+      state.hideRejected ? ' Show Rejected' : ' Hide Rejected');
     applyFilters();
   });
-  actionsDiv.appendChild(verifyBtn);
 
-  header.appendChild(actionsDiv);
-
-  header.addEventListener('click', () => {
-    container.classList.toggle('collapsed');
+  el.expandAllBtn.addEventListener('click', () => {
+    state.collapsed = !state.collapsed;
+    el.expandAllBtn.replaceChildren(icon(state.collapsed ? 'arrows-expand' : 'arrows-collapse'),
+      state.collapsed ? ' Expand All' : ' Collapse All');
+    render();
   });
 
-  if (expandAllState) {
-    container.classList.add('collapsed');
-  }
+  const toJsonArray = (records) => JSON.stringify(records.map((r) => r.raw), null, 2);
 
-  container.appendChild(header);
-
-  // Collapsed summary line
-  const summaryLine = document.createElement('div');
-  summaryLine.classList.add('summary-line');
-  const linkVal = getNestedValue(result, 'SourceMetadata.Data.Github.link')
-    || getNestedValue(result, 'SourceMetadata.Data.Github.file')
-    || 'N/A';
-  const detVal = result.DetectorName || 'N/A';
-  let rawShort = (result.Raw || '').slice(0, 50);
-  if (rawShort.length === 50) rawShort += '...';
-  summaryLine.innerHTML = `
-    <strong>Detector:</strong> ${detVal} &mdash;
-    <strong>Path:</strong> ${linkVal} &mdash;
-    <strong>Snippet:</strong> ${rawShort}
-  `;
-  container.appendChild(summaryLine);
-
-  // Full body
-  const body = document.createElement('div');
-  body.classList.add('result-body');
-
-  // 1) Path
-  body.appendChild(createDetail('Path:', linkVal.startsWith('http')
-    ? `<a href="${linkVal}" target="_blank">${linkVal}</a>` : linkVal));
-
-  // 2) File
-  body.appendChild(createDetail('Uploaded File:', result._uploadedFile || 'N/A'));
-
-  // 3) Repository
-  const repoVal = getNestedValue(result, 'SourceMetadata.Data.Github.repository') || 'N/A';
-  body.appendChild(createDetail('Repository:', repoVal));
-
-  // 4) Commit
-  const commitVal = getNestedValue(result, 'SourceMetadata.Data.Github.commit') || 'N/A';
-  body.appendChild(createDetail('Commit:', commitVal));
-
-  // 5) Date
-  const timeVal = getNestedValue(result, 'SourceMetadata.Data.Github.timestamp') || 'N/A';
-  body.appendChild(createDetail('Date:', timeVal));
-
-  // 6) Author
-  const authorVal = getNestedValue(result, 'SourceMetadata.Data.Github.email') || 'N/A';
-  body.appendChild(createDetail('Author:', authorVal));
-
-  // 7) Detector
-  body.appendChild(createDetail('Detector:', detVal));
-
-  // 8) DetectorDescription
-  const descVal = result.DetectorDescription || 'N/A';
-  body.appendChild(createDetail('Description:', descVal));
-
-  // Verified
-  const verifiedTag = result.Verified
-    ? `<i class="bi bi-check-circle-fill"></i> <span class="tag tag-verified">Verified</span>`
-    : `<i class="bi bi-x-circle-fill"></i> <span class="tag tag-unverified">Not Verified</span>`;
-  body.appendChild(createDetail('Verified:', verifiedTag));
-
-  // Rejected
-  const rejectedTag = result.Rejected
-    ? `<i class="bi bi-x-circle-fill"></i> <span class="tag tag-rejected">Rejected</span>`
-    : 'No';
-  body.appendChild(createDetail('Rejected:', rejectedTag));
-
-  // Leaked Info - no expansion needed, scrolling handles it
-  const leakedInfoDiv = document.createElement('div');
-  leakedInfoDiv.classList.add('leaked-container');
-  const rawVal = result.Raw || 'N/A';
-  leakedInfoDiv.innerHTML = `<strong>Leaked Information:</strong>\n${rawVal}`;
-  body.appendChild(leakedInfoDiv);
-
-  container.appendChild(body);
-  return container;
-}
-
-function createDetail(label, valueHTML) {
-  const div = document.createElement('div');
-  div.classList.add('result-detail');
-  div.innerHTML = `<strong>${label}</strong> ${valueHTML}`;
-  return div;
-}
-
-/**************************************************************
- * SHOW/HIDE REJECTED
- **************************************************************/
-toggleRejectedBtn.addEventListener('click', () => {
-  hideRejected = !hideRejected;
-  toggleRejectedBtn.innerHTML = hideRejected
-    ? '<i class="bi bi-eye-slash"></i> Hide Rejected'
-    : '<i class="bi bi-eye"></i> Show Rejected';
-  applyFilters();
-});
-
-/**************************************************************
- * MASS UPDATE (Reject or Verify)
- **************************************************************/
-rejectAllBtn.addEventListener('click', () => {
-  massUpdateFiltered({ Reject: true });
-});
-verifyAllBtn.addEventListener('click', () => {
-  massUpdateFiltered({ Verify: true });
-});
-function massUpdateFiltered(action) {
-  currentFilteredResults.forEach(r => {
-    if (action.Reject) r.Rejected = true;
-    if (action.Verify) r.Verified = true;
-    statusesMap[r._id] = {
-      Verified: r.Verified,
-      Rejected: r.Rejected
-    };
+  el.exportVerifiedBtn.addEventListener('click', () => {
+    const verified = state.records.filter((r) => r.verified || r.review.confirmed);
+    if (!verified.length) return alert('No verified or confirmed results to export.');
+    download(toJsonArray(verified), 'verified_findings.json');
   });
-  storeStatuses();
-  updateStats();
-  applyFilters();
-}
 
-/**************************************************************
- * EXPORT RESULTS (Verified, Filtered, etc.)
- **************************************************************/
-exportVerifiedBtn.addEventListener('click', () => {
-  const verifiedOnly = allResults.filter(r => r.Verified);
-  if (!verifiedOnly.length) {
-    alert("No verified results to export!");
-    return;
-  }
-  downloadJsonFile(verifiedOnly, "verified_findings.json");
-});
+  el.exportFilteredBtn.addEventListener('click', () => {
+    if (!state.filtered.length) return alert('No filtered results to export.');
+    download(toJsonArray(state.filtered), 'filtered_findings.json');
+  });
 
-exportFilteredBtn.addEventListener('click', () => {
-  if (!currentFilteredResults.length) {
-    alert("No filtered results to export!");
-    return;
-  }
-  downloadJsonFile(currentFilteredResults, "filtered_findings.json");
-});
+  el.saveSessionBtn.addEventListener('click', () => {
+    if (!state.records.length) return alert('No data loaded to save.');
+    const session = state.records.map((r) => ({
+      ...r.raw, _uploadedFile: r.sourceFiles[0], Rejected: r.review.rejected, Confirmed: r.review.confirmed,
+    }));
+    download(JSON.stringify(session, null, 2), 'session_backup.json');
+  });
 
-function downloadJsonFile(dataArray, filename) {
-  const blob = new Blob([JSON.stringify(dataArray, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-/**************************************************************
- * NEW CODE: SAVE CURRENT SESSION
- * Exports the entire 'allResults' array (with statuses)
- **************************************************************/
-saveSessionBtn.addEventListener('click', () => {
-  if (!allResults.length) {
-    alert("No data loaded to save!");
-    return;
-  }
-  // The entire array includes Verified/Rejected flags
-  downloadJsonFile(allResults, "session_backup.json");
-});
-
-expandAllBtn.addEventListener('click', () => {
-  expandAllState = !expandAllState;
-  if (expandAllState) {
-    expandAllBtn.innerHTML = '<i class="bi bi-arrows-expand"></i> Expand All';
-  } else {
-    expandAllBtn.innerHTML = '<i class="bi bi-arrows-collapse"></i> Collapse All';
-  }
-  renderCurrentBatch();
-  updateFilteredCountDisplay();
-});
-
-/**************************************************************
- * CLEAR ALL FILTERS
- **************************************************************/
-clearFiltersBtn.addEventListener('click', () => {
-  filterRepository.value = '';
-  filterDetector.value = '';
-  filterFileName.value = '';
-  filterVerified.value = '';
-  filterRegex.value = '';
-  filterRegex.classList.remove('active-filter'); // Remove visual feedback
-  sortBy.value = '';
-
-  selectedDateRange = [null, null];
-  const dateInput = document.getElementById('filterDateRange');
-  if (dateInput._flatpickr) {
-    dateInput._flatpickr.clear();
-  }
-
-  applyFilters();
-});
-
-/**************************************************************
- * HELPER: getNestedValue
- **************************************************************/
-function getNestedValue(obj, path) {
-  if (!obj) return undefined;
-  return path.split('.').reduce((acc, part) => acc && acc[part], obj);
-}
+  render();
+})();
