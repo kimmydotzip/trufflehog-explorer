@@ -29,6 +29,7 @@
     rulesFile: $('rulesFile'),
     togglePrunedBtn: $('togglePrunedBtn'),
     expandAllBtn: $('expandAllBtn'),
+    revealSecretsBtn: $('revealSecretsBtn'),
     exportFormat: $('exportFormat'),
     exportKeptBtn: $('exportKeptBtn'),
     exportPrunedBtn: $('exportPrunedBtn'),
@@ -76,6 +77,8 @@
     view: 'findings', // or 'groups'
     groups: [],
     expandedGroups: new Set(),
+    revealAll: false,
+    revealed: new Set(), // secretKeys revealed individually
   };
 
   const items = () => (state.view === 'groups' ? state.groups : state.filtered);
@@ -388,6 +391,51 @@
     return h('span', { class: `tag ${cls}`, text });
   }
 
+  /* ---------------- Secret masking ---------------- */
+
+  const isRevealed = (key) => state.revealAll || state.revealed.has(key);
+  const snippetOf = (secret, key) =>
+    isRevealed(key) ? (secret.length > 50 ? secret.slice(0, 50) + '…' : secret) : C.maskSecret(secret);
+
+  // Re-renders one card in place, keeping its collapsed/expanded state.
+  function rerenderCard(card, renderFn, item) {
+    const fresh = renderFn(item);
+    fresh.classList.toggle('collapsed', card.classList.contains('collapsed'));
+    card.replaceWith(fresh);
+  }
+
+  function secretBlock(secret, key, rerender) {
+    const revealed = isRevealed(key);
+    const copyBtn = h('button', {
+      class: 'btn btn-info btn-small', title: 'Copy the full secret to the clipboard',
+      onclick: async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(secret);
+          copyBtn.lastChild.textContent = ' Copied';
+        } catch {
+          copyBtn.lastChild.textContent = ' Copy failed';
+        }
+        setTimeout(() => { copyBtn.lastChild.textContent = ' Copy'; }, 1500);
+      },
+    }, icon('clipboard'), h('span', { text: ' Copy' }));
+    return h('div', { class: 'leaked-container' },
+      h('div', { class: 'leaked-head' },
+        h('strong', { text: 'Leaked Information:' }),
+        secret ? h('span', { class: 'leaked-tools' },
+          state.revealAll ? '' : h('button', {
+            class: 'btn btn-info btn-small reveal-btn', 'aria-pressed': String(revealed),
+            title: revealed ? 'Mask this secret' : 'Show this secret',
+            onclick: (e) => {
+              e.stopPropagation();
+              if (revealed) state.revealed.delete(key); else state.revealed.add(key);
+              rerender();
+            },
+          }, icon(revealed ? 'eye-slash' : 'eye'), revealed ? ' Hide' : ' Reveal'),
+          copyBtn) : ''),
+      h('div', { class: 'leaked-value' + (revealed ? '' : ' masked'), text: secret ? (revealed ? secret : C.maskSecret(secret)) : 'N/A' }));
+  }
+
   function renderCard(r) {
     const card = h('div', { class: 'result-container' + (state.collapsed ? ' collapsed' : '') });
 
@@ -410,7 +458,7 @@
       actions);
 
     const where = r.file ? `${r.file}${r.line ? ':' + r.line : ''}` : r.link;
-    const snippet = r.secret.length > 50 ? r.secret.slice(0, 50) + '…' : r.secret;
+    const snippet = snippetOf(r.secret, r.secretKey);
     const summary = h('div', { class: 'summary-line' },
       h('strong', { text: 'Path: ' }), where || 'N/A', ' — ', h('strong', { text: 'Snippet: ' }), snippet);
 
@@ -429,7 +477,7 @@
       detail('Description:', r.description),
       detail('Verification:', r.verificationError ? `Error: ${r.verificationError}` : (r.verified ? 'Verified by TruffleHog' : 'Not verified')),
       r.review.pruned ? detail('Pruned:', r.review.pruned) : '',
-      h('div', { class: 'leaked-container' }, h('strong', { text: 'Leaked Information:' }), '\n', r.secret || 'N/A'));
+      secretBlock(r.secret, r.secretKey, () => rerenderCard(card, renderCard, r)));
 
     card.append(header, summary, body);
     return card;
@@ -464,7 +512,7 @@
         s.pruned ? tag(`Pruned ×${s.pruned}`, 'tag-rejected') : ''),
       actions);
 
-    const snippet = g.secret.length > 50 ? g.secret.slice(0, 50) + '…' : g.secret;
+    const snippet = snippetOf(g.secret, g.key);
     const summary = h('div', { class: 'summary-line' },
       h('strong', { text: `${s.count} occurrence${s.count === 1 ? '' : 's'}` }),
       ` in ${s.files} file${s.files === 1 ? '' : 's'} across ${s.repos} repo${s.repos === 1 ? '' : 's'} — `,
@@ -495,10 +543,10 @@
         class: 'btn btn-info btn-small',
         onclick: () => {
           if (expanded) state.expandedGroups.delete(g.key); else state.expandedGroups.add(g.key);
-          card.replaceWith(renderGroupCard(g));
+          rerenderCard(card, renderGroupCard, g);
         },
       }, expanded ? 'Show fewer' : `Show all ${g.records.length} occurrences`) : '',
-      h('div', { class: 'leaked-container' }, h('strong', { text: 'Leaked Information:' }), '\n', g.secret || 'N/A'));
+      secretBlock(g.secret, g.key, () => rerenderCard(card, renderGroupCard, g)));
 
     card.append(header, summary, body);
     return card;
@@ -693,6 +741,15 @@
   }
   el.viewFindingsBtn.addEventListener('click', () => setView('findings'));
   el.viewGroupsBtn.addEventListener('click', () => setView('groups'));
+
+  el.revealSecretsBtn.addEventListener('click', () => {
+    state.revealAll = !state.revealAll;
+    if (!state.revealAll) state.revealed.clear();
+    el.revealSecretsBtn.setAttribute('aria-pressed', String(state.revealAll));
+    el.revealSecretsBtn.replaceChildren(icon(state.revealAll ? 'eye-slash' : 'eye'),
+      state.revealAll ? ' Mask Secrets' : ' Reveal Secrets');
+    render();
+  });
 
   el.expandAllBtn.addEventListener('click', () => {
     state.collapsed = !state.collapsed;

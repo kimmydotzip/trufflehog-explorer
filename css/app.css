@@ -716,3 +716,22 @@ header h1 {
   gap: 8px;
   margin-top: 10px;
 }
+
+/* Secret masking */
+.leaked-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  white-space: normal;
+  font-family: 'Poppins', sans-serif;
+  margin-bottom: 4px;
+}
+.leaked-tools {
+  display: inline-flex;
+  gap: 6px;
+}
+.leaked-value.masked {
+  color: #8a6d94;
+  letter-spacing: 0.04em;
+}
