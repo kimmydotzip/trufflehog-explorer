@@ -8,12 +8,9 @@
   const el = {
     trufflehogFile: $('trufflehogFile'),
     sessionFile: $('sessionFile'),
-    filterRepository: $('filterRepository'),
-    filterDetector: $('filterDetector'),
-    filterFileName: $('filterFileName'),
+    fieldFilters: $('fieldFilters'),
     filterVerified: $('filterVerified'),
     filterDateRange: $('filterDateRange'),
-    filterRegex: $('filterRegex'),
     sortBy: $('sortBy'),
     clearFiltersBtn: $('clearFiltersBtn'),
     rejectAllBtn: $('rejectAllBtn'),
@@ -171,15 +168,10 @@
   });
 
   function rebuildOptions() {
-    const fill = (select, values) => {
-      const current = select.value;
-      select.replaceChildren(h('option', { value: '', text: 'All' }),
-        ...[...values].filter(Boolean).sort().map((v) => h('option', { value: v, text: v })));
-      select.value = values.has(current) ? current : '';
-    };
-    fill(el.filterRepository, new Set(state.records.map((r) => r.repository)));
-    fill(el.filterDetector, new Set(state.records.map((r) => r.detector)));
-    fill(el.filterFileName, new Set(state.records.flatMap((r) => r.sourceFiles)));
+    for (const field of C.FIELDS.filter((f) => f.suggest)) {
+      const values = new Set(state.records.flatMap((r) => field.get(r)).filter(Boolean));
+      fieldInputs[field.key].list.replaceChildren(...[...values].sort().map((v) => h('option', { value: v })));
+    }
   }
 
   /* ---------------- Stats ---------------- */
@@ -206,48 +198,51 @@
 
   /* ---------------- Filtering ---------------- */
 
-  function compileRegex() {
-    const value = el.filterRegex.value.trim();
-    el.filterRegex.classList.toggle('active-filter', !!value);
-    el.filterRegex.classList.remove('invalid-filter');
-    if (!value) return null;
-    try {
-      return new RegExp(value, 'i');
-    } catch {
-      el.filterRegex.classList.add('invalid-filter');
-      return null;
+  const fieldInputs = {};
+  for (const field of C.FIELDS) {
+    const id = `filter-${field.key}`;
+    const input = h('input', { type: 'text', id, placeholder: field.placeholder, autocomplete: 'off', spellcheck: 'false' });
+    const list = field.suggest ? h('datalist', { id: `${id}-list` }) : null;
+    if (list) input.setAttribute('list', list.id);
+    const error = h('div', { class: 'filter-error' });
+    fieldInputs[field.key] = { input, list, error };
+    el.fieldFilters.append(h('div', { class: 'field-filter' },
+      h('label', { for: id, text: field.label }), input, list, error));
+  }
+
+  function currentSpec() {
+    const fields = {};
+    for (const [key, { input }] of Object.entries(fieldInputs)) {
+      if (input.value.trim()) fields[key] = input.value.trim();
     }
+    const [start, end] = state.dateRange;
+    return {
+      fields,
+      verified: el.filterVerified.value,
+      from: start ? start.getTime() : null,
+      to: end ? end.getTime() + 86400000 - 1 : null, // inclusive end date
+    };
   }
 
   function applyFilters() {
-    const repo = el.filterRepository.value;
-    const det = el.filterDetector.value;
-    const src = el.filterFileName.value;
-    const ver = el.filterVerified.value;
-    const regex = compileRegex();
+    const spec = currentSpec();
+    const predicate = C.buildPredicate(spec);
+    for (const [key, { input, error }] of Object.entries(fieldInputs)) {
+      const msg = predicate.errors[key] || '';
+      input.classList.toggle('active-filter', !!spec.fields[key] && !msg);
+      input.classList.toggle('invalid-filter', !!msg);
+      error.textContent = msg;
+    }
 
-    let [start, end] = state.dateRange;
-    start = start ? start.getTime() : null;
-    end = end ? end.getTime() + 86400000 - 1 : null; // inclusive end date
-
-    const out = state.records.filter((r) => {
-      if (state.hideRejected && r.review.rejected) return false;
-      if (ver === 'true' && !r.verified) return false;
-      if (ver === 'false' && r.verified) return false;
-      if (repo && r.repository !== repo) return false;
-      if (det && r.detector !== det) return false;
-      if (src && !r.sourceFiles.includes(src)) return false;
-      if (start !== null && (r.timestamp === null || r.timestamp < start)) return false;
-      if (end !== null && (r.timestamp === null || r.timestamp > end)) return false;
-      if (regex && !regex.test(r.secret)) return false;
-      return true;
-    });
+    const out = state.records.filter((r) => !(state.hideRejected && r.review.rejected) && predicate.test(r));
 
     const sorters = {
       dateAsc: (a, b) => (a.timestamp || 0) - (b.timestamp || 0),
       dateDesc: (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
       repoAsc: (a, b) => a.repository.localeCompare(b.repository),
       repoDesc: (a, b) => b.repository.localeCompare(a.repository),
+      detectorAsc: (a, b) => a.detector.localeCompare(b.detector),
+      pathAsc: (a, b) => a.file.localeCompare(b.file),
       verifiedAsc: (a, b) => Number(b.verified) - Number(a.verified),
       verifiedDesc: (a, b) => Number(a.verified) - Number(b.verified),
     };
@@ -359,13 +354,12 @@
 
   /* ---------------- Actions ---------------- */
 
-  [el.filterRepository, el.filterDetector, el.filterFileName, el.filterVerified, el.sortBy]
-    .forEach((s) => s.addEventListener('change', applyFilters));
+  [el.filterVerified, el.sortBy].forEach((s) => s.addEventListener('change', applyFilters));
 
-  let regexTimer;
-  el.filterRegex.addEventListener('input', () => {
-    clearTimeout(regexTimer);
-    regexTimer = setTimeout(applyFilters, 300);
+  let filterTimer;
+  el.fieldFilters.addEventListener('input', () => {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(applyFilters, 250);
   });
 
   const datePicker = flatpickr(el.filterDateRange, {
@@ -378,8 +372,9 @@
   });
 
   el.clearFiltersBtn.addEventListener('click', () => {
-    for (const s of [el.filterRepository, el.filterDetector, el.filterFileName, el.filterVerified, el.sortBy]) s.value = '';
-    el.filterRegex.value = '';
+    for (const { input } of Object.values(fieldInputs)) input.value = '';
+    el.filterVerified.value = '';
+    el.sortBy.value = '';
     state.dateRange = [null, null];
     datePicker.clear();
     applyFilters();

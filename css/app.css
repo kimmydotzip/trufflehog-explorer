@@ -502,3 +502,45 @@ header h1 {
   color: #666;
   font-weight: 500;
 }
+
+/* Pattern filters */
+.controls-container input[type="text"] {
+  background-image: none;
+  cursor: text;
+  font-size: 0.9rem;
+}
+.field-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.field-filter label {
+  font-size: 0.9rem;
+  margin-bottom: 2px;
+}
+.filter-error {
+  color: #cc4b4b;
+  font-size: 0.8rem;
+}
+.filter-error:empty {
+  display: none;
+}
+.syntax-help {
+  font-size: 0.85rem;
+  color: #666;
+}
+.syntax-help summary {
+  cursor: pointer;
+  color: #b56cc2;
+  font-weight: 500;
+}
+.syntax-help ul {
+  margin: 6px 0 0 18px;
+}
+.syntax-help code,
+.rule-pattern code {
+  background: #f6eef8;
+  border-radius: 3px;
+  padding: 0 3px;
+  font-size: 0.8rem;
+}

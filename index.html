@@ -54,33 +54,20 @@
       <div class="sidebar-section">
         <h2>Filters</h2>
         <div class="controls-container">
-          <div>
-            <label for="filterRepository">
-              Filter by Repository:
-              <span class="info-icon" title="Choose a specific repository or leave as All.">?</span>
-            </label>
-            <select id="filterRepository">
-              <option value="">All</option>
-            </select>
-          </div>
-          <div>
-            <label for="filterDetector">
-              Filter by Detector:
-              <span class="info-icon" title="Which type of secret detector flagged the finding?">?</span>
-            </label>
-            <select id="filterDetector">
-              <option value="">All</option>
-            </select>
-          </div>
-          <div>
-            <label for="filterFileName">
-              Filter by Source File:
-              <span class="info-icon" title="Which loaded JSON file the finding came from.">?</span>
-            </label>
-            <select id="filterFileName">
-              <option value="">All</option>
-            </select>
-          </div>
+          <details class="syntax-help">
+            <summary><i class="bi bi-info-circle"></i> Pattern syntax</summary>
+            <ul>
+              <li>Separate patterns with commas: <code>AWS, Azure*</code> matches either.</li>
+              <li><code>*</code> any characters, <code>?</code> one character. Wildcard patterns match the whole value: <code>*.lock</code>.</li>
+              <li>Text without wildcards matches anywhere: <code>terraform</code>.</li>
+              <li><code>/regex/</code> for regular expressions: <code>/^AKIA/</code>.</li>
+              <li>Prefix <code>!</code> to exclude: <code>!*.lock, !*package.json</code>.</li>
+              <li>Everything is case-insensitive.</li>
+            </ul>
+          </details>
+
+          <div id="fieldFilters" class="field-filters"></div>
+
           <div>
             <label for="filterVerified">
               Filter by Verified:
@@ -102,15 +89,6 @@
             <input type="text" id="filterDateRange" placeholder="Select date range..." />
           </div>
 
-          <!-- REGEX Search -->
-          <div>
-            <label for="filterRegex">
-              Search Raw Results (Regex):
-              <span class="info-icon" title="Use regex patterns to search leaked information. E.g., password.*123">?</span>
-            </label>
-            <input type="text" id="filterRegex" placeholder="Enter regex pattern..." />
-          </div>
-
           <!-- Sort -->
           <div>
             <label for="sortBy">Sort By:</label>
@@ -120,6 +98,8 @@
               <option value="dateDesc">Date Desc</option>
               <option value="repoAsc">Repository Asc</option>
               <option value="repoDesc">Repository Desc</option>
+              <option value="detectorAsc">Detector</option>
+              <option value="pathAsc">File Path</option>
               <option value="verifiedAsc">Verified First</option>
               <option value="verifiedDesc">Unverified First</option>
             </select>

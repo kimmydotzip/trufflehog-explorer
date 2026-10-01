@@ -153,8 +153,136 @@
     return /^https?:\/\//i.test(s) ? s : '';
   }
 
+  /* ---------------- Pattern filters ---------------- */
+
+  function escapeRegex(value) {
+    return str(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  // Split on commas, except inside a /regex/ token.
+  function splitPatterns(text) {
+    const s = str(text);
+    const out = [];
+    let cur = '';
+    let inRegex = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (inRegex) {
+        cur += ch;
+        if (ch === '\\' && i + 1 < s.length) cur += s[++i];
+        else if (ch === '/') inRegex = false;
+        continue;
+      }
+      if (ch === ',') {
+        out.push(cur);
+        cur = '';
+        continue;
+      }
+      cur += ch;
+      if (ch === '/' && /^\s*!?\s*\/$/.test(cur)) inRegex = true;
+    }
+    out.push(cur);
+    if (inRegex) return s.split(',').map((t) => t.trim()).filter(Boolean);
+    return out.map((t) => t.trim()).filter(Boolean);
+  }
+
+  // "!x" excludes; "/re/" is a regex; "*" and "?" are wildcards (whole value); otherwise substring.
+  // All matching is case-insensitive.
+  function compilePattern(token) {
+    let s = str(token).trim();
+    let negate = false;
+    if (s.startsWith('!')) {
+      negate = true;
+      s = s.slice(1).trim();
+    }
+    if (!s) return null;
+    const rx = s.match(/^\/(.+)\/$/);
+    if (rx) {
+      const re = new RegExp(rx[1], 'i');
+      return { negate, kind: 'regex', source: s, test: (v) => re.test(v) };
+    }
+    if (/[*?]/.test(s)) {
+      const re = new RegExp('^' + escapeRegex(s).replace(/\\\*/g, '.*').replace(/\\\?/g, '.') + '$', 'is');
+      return { negate, kind: 'glob', source: s, test: (v) => re.test(v) };
+    }
+    const needle = s.toLowerCase();
+    return { negate, kind: 'text', source: s, test: (v) => v.toLowerCase().includes(needle) };
+  }
+
+  function compileFilter(text) {
+    const f = { text: str(text), includes: [], excludes: [], error: '' };
+    for (const token of splitPatterns(text)) {
+      try {
+        const p = compilePattern(token);
+        if (p) (p.negate ? f.excludes : f.includes).push(p);
+      } catch (e) {
+        f.error = `Invalid regex ${token}: ${e.message}`;
+      }
+    }
+    f.active = f.includes.length + f.excludes.length > 0;
+    return f;
+  }
+
+  // A field may expose several values (e.g. Raw and RawV2); empty values are ignored.
+  function matchFilter(f, values) {
+    const vals = values.filter((v) => v !== '' && v !== undefined && v !== null).map(String);
+    if (!vals.length) vals.push('');
+    if (f.includes.length && !f.includes.some((p) => vals.some((v) => p.test(v)))) return false;
+    if (f.excludes.some((p) => vals.some((v) => p.test(v)))) return false;
+    return true;
+  }
+
+  function extraValues(rec) {
+    if (!rec.extra) return [];
+    return Object.entries(rec.extra).map(([k, v]) => `${k}=${v !== null && typeof v === 'object' ? JSON.stringify(v) : str(v)}`);
+  }
+
+  const FIELDS = [
+    { key: 'detector', label: 'Detector', suggest: true, placeholder: 'AWS, Azure*, !URI', get: (r) => [r.detector] },
+    { key: 'file', label: 'File path', placeholder: '!*.lock, !*package.json', get: (r) => [r.file] },
+    { key: 'repository', label: 'Repository', suggest: true, placeholder: '*terraform*', get: (r) => [r.repository] },
+    { key: 'secret', label: 'Secret value', placeholder: '/^AKIA/, !*example*', get: (r) => [r.secret, r.secretV2] },
+    { key: 'email', label: 'Author', placeholder: '*@example.com', get: (r) => [r.email] },
+    { key: 'commit', label: 'Commit', placeholder: 'a1b2c3*', get: (r) => [r.commit] },
+    { key: 'decoder', label: 'Decoder', suggest: true, placeholder: 'PLAIN, BASE64', get: (r) => [r.decoder] },
+    { key: 'extra', label: 'Extra data', placeholder: 'token_type=*, !rotation_guide=*', get: extraValues },
+    { key: 'source', label: 'Source file', suggest: true, placeholder: 'scan*.json', get: (r) => r.sourceFiles },
+  ];
+  const FIELD_BY_KEY = Object.fromEntries(FIELDS.map((f) => [f.key, f]));
+
+  /*
+   * spec: { fields: { [key]: patternText }, verified: '' | 'true' | 'false', from: ms|null, to: ms|null }
+   * Returns { test(rec) -> bool, errors: { [key]: message }, active: bool }.
+   */
+  function buildPredicate(spec) {
+    const s = spec || {};
+    const errors = {};
+    const compiled = [];
+    for (const [key, text] of Object.entries(s.fields || {})) {
+      const field = FIELD_BY_KEY[key];
+      if (!field) continue;
+      const f = compileFilter(text);
+      if (f.error) errors[key] = f.error;
+      if (f.active) compiled.push([field, f]);
+    }
+    const verified = s.verified || '';
+    const from = typeof s.from === 'number' ? s.from : null;
+    const to = typeof s.to === 'number' ? s.to : null;
+    const test = (r) => {
+      if (verified === 'true' && !r.verified) return false;
+      if (verified === 'false' && r.verified) return false;
+      if (from !== null && (r.timestamp === null || r.timestamp < from)) return false;
+      if (to !== null && (r.timestamp === null || r.timestamp > to)) return false;
+      for (const [field, f] of compiled) if (!matchFilter(f, field.get(r))) return false;
+      return true;
+    };
+    return { test, errors, active: compiled.length > 0 || !!verified || from !== null || to !== null };
+  }
+
   return {
     hash, str, parseTimestamp, sourceMeta, normalizeFinding, stripInternal,
     parseFindings, assignIds, escapeHtml, safeUrl,
+    escapeRegex, splitPatterns, compilePattern, compileFilter, matchFilter, extraValues,
+    FIELDS, FIELD_BY_KEY, buildPredicate,
   };
 });
