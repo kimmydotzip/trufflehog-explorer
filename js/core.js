@@ -89,7 +89,7 @@
   }
 
   // Legacy explorer sessions stored annotated copies of the findings; strip those fields.
-  const INTERNAL_FIELDS = ['_id', '_uploadedFile', 'Rejected', 'Confirmed'];
+  const INTERNAL_FIELDS = ['_id', '_uploadedFile', 'Rejected', 'Confirmed', 'Pruned'];
   function stripInternal(obj) {
     const copy = { ...obj };
     for (const k of INTERNAL_FIELDS) delete copy[k];
@@ -279,10 +279,65 @@
     return { test, errors, active: compiled.length > 0 || !!verified || from !== null || to !== null };
   }
 
+  /* ---------------- Pruning & rules ---------------- */
+
+  // TruffleHog-verified and reviewer-confirmed findings are never pruned by bulk actions unless forced.
+  const isProtected = (r) => !!(r.verified || (r.review && r.review.confirmed));
+
+  // Splits candidates into those that would be pruned and those skipped (protected or already pruned).
+  function planPrune(records, predicate, { includeProtected = false } = {}) {
+    const prune = [];
+    let protectedCount = 0;
+    let alreadyPruned = 0;
+    for (const r of records) {
+      if (predicate && !predicate(r)) continue;
+      if (r.review && r.review.pruned) { alreadyPruned++; continue; }
+      if (!includeProtected && isProtected(r)) { protectedCount++; continue; }
+      prune.push(r);
+    }
+    return { prune, protectedCount, alreadyPruned };
+  }
+
+  // Rules are portable: only field patterns and the verified selector (no dates, no record ids).
+  function ruleFromSpec(name, spec) {
+    const fields = {};
+    for (const [k, v] of Object.entries((spec && spec.fields) || {})) {
+      if (FIELD_BY_KEY[k] && str(v).trim()) fields[k] = str(v).trim();
+    }
+    const verified = spec && (spec.verified === 'true' || spec.verified === 'false') ? spec.verified : '';
+    const ruleName = str(name).trim() || 'Unnamed rule';
+    return { id: 'r' + hash(JSON.stringify([ruleName, fields, verified])), name: ruleName, fields, verified };
+  }
+
+  function describeRule(rule) {
+    const parts = Object.entries(rule.fields || {}).map(([k, v]) => `${(FIELD_BY_KEY[k] || { label: k }).label}: ${v}`);
+    if (rule.verified) parts.push(rule.verified === 'true' ? 'Verified only' : 'Unverified only');
+    return parts.join(' · ') || 'Matches everything';
+  }
+
+  // Accepts an exported rules file ({rules:[...]} or a bare array); returns valid rules and errors.
+  function parseRules(json) {
+    const data = typeof json === 'string' ? JSON.parse(json) : json;
+    const list = Array.isArray(data) ? data : data && Array.isArray(data.rules) ? data.rules : null;
+    if (!list) throw new Error('Expected an array of rules or an object with a "rules" array.');
+    const rules = [];
+    const errors = [];
+    list.forEach((item, i) => {
+      if (!item || typeof item !== 'object') return errors.push(`Rule ${i + 1}: not an object`);
+      const rule = ruleFromSpec(item.name, item);
+      if (!Object.keys(rule.fields).length && !rule.verified) return errors.push(`Rule ${i + 1} (${rule.name}): no patterns`);
+      const bad = Object.entries(rule.fields).map(([k, v]) => compileFilter(v).error && `${k}: ${compileFilter(v).error}`).filter(Boolean);
+      if (bad.length) return errors.push(`Rule ${i + 1} (${rule.name}): ${bad.join('; ')}`);
+      rules.push(rule);
+    });
+    return { rules, errors };
+  }
+
   return {
     hash, str, parseTimestamp, sourceMeta, normalizeFinding, stripInternal,
     parseFindings, assignIds, escapeHtml, safeUrl,
     escapeRegex, splitPatterns, compilePattern, compileFilter, matchFilter, extraValues,
     FIELDS, FIELD_BY_KEY, buildPredicate,
+    isProtected, planPrune, ruleFromSpec, describeRule, parseRules,
   };
 });

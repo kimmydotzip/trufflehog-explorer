@@ -118,18 +118,44 @@
       <div class="sidebar-section">
         <h2>Actions</h2>
 
-        <!-- Batch Review -->
+        <!-- Prune -->
         <div class="actions-group">
-          <h3>Batch Review</h3>
+          <h3>Prune</h3>
+          <p class="hint">Pruning removes findings from the working set and records why. TruffleHog-verified and confirmed findings are skipped.</p>
           <div class="buttons-group">
-            <!-- Button: Reject All Filtered -->
-            <button class="btn btn-danger" id="rejectAllBtn">
-              <i class="bi bi-x-circle"></i> &nbspReject All Filtered
+            <button class="btn btn-danger" id="pruneFilteredBtn" title="Prune every finding that matches the current filters">
+              <i class="bi bi-scissors"></i> &nbspPrune Filtered
             </button>
-            <!-- Button: Mark All Filtered Confirmed -->
+            <button class="btn btn-info" id="restoreFilteredBtn" title="Restore pruned findings that match the current filters">
+              <i class="bi bi-arrow-counterclockwise"></i> &nbspRestore Filtered
+            </button>
             <button class="btn btn-secondary" id="verifyAllBtn" title="Mark every filtered finding as a confirmed true positive">
               <i class="bi bi-check-circle"></i> &nbspConfirm All Filtered
             </button>
+          </div>
+        </div>
+
+        <!-- Rules -->
+        <div class="actions-group">
+          <h3>Prune Rules</h3>
+          <p class="hint">Save the current filters as a reusable rule, then apply it to this or future scans.</p>
+          <div class="buttons-group">
+            <button class="btn btn-secondary" id="saveRuleBtn">
+              <i class="bi bi-bookmark-plus"></i> &nbspSave Filters as Rule
+            </button>
+            <button class="btn btn-danger" id="applyAllRulesBtn">
+              <i class="bi bi-lightning"></i> &nbspApply All Rules
+            </button>
+          </div>
+          <ul id="rulesList" class="rules-list"></ul>
+          <div class="buttons-group">
+            <button class="btn btn-warning" id="exportRulesBtn">
+              <i class="bi bi-download"></i> &nbspExport Rules
+            </button>
+            <label class="btn btn-warning file-btn" for="rulesFile">
+              <i class="bi bi-upload"></i> &nbspImport Rules
+            </label>
+            <input type="file" id="rulesFile" accept=".json" hidden />
           </div>
         </div>
 
@@ -137,9 +163,9 @@
         <div class="actions-group">
           <h3>Visibility</h3>
           <div class="buttons-group">
-            <!-- Button: Show/Hide Rejected -->
-            <button class="btn btn-info" id="toggleRejectedBtn">
-              <i class="bi bi-eye"></i> &nbspShow Rejected
+            <!-- Button: Show/Hide Pruned -->
+            <button class="btn btn-info" id="togglePrunedBtn">
+              <i class="bi bi-eye"></i> &nbspShow Pruned
             </button>
             <!-- Expand/Collapse All Cards -->
             <button class="btn btn-info" id="expandAllBtn">
@@ -212,10 +238,10 @@
             <strong><i class="bi bi-calendar2-week"></i> Last Seen</strong>
             <span id="lastSeen">N/A</span>
           </div>
-          <!-- New 8th stat: Rejected -->
+          <!-- 8th stat: Pruned -->
           <div class="stats-detail">
-            <strong><i class="bi bi-archive-fill"></i> Rejected</strong>
-            <span id="rejectedCount">0</span>
+            <strong><i class="bi bi-scissors"></i> Pruned</strong>
+            <span id="prunedCount">0</span>
           </div>
         </div>
 

@@ -4,6 +4,8 @@
   const C = window.THCore;
   const $ = (id) => document.getElementById(id);
   const REVIEW_KEY = 'thReview.v2';
+  const RULES_KEY = 'thRules.v1';
+  const MANUAL = 'Pruned manually';
 
   const el = {
     trufflehogFile: $('trufflehogFile'),
@@ -13,9 +15,15 @@
     filterDateRange: $('filterDateRange'),
     sortBy: $('sortBy'),
     clearFiltersBtn: $('clearFiltersBtn'),
-    rejectAllBtn: $('rejectAllBtn'),
+    pruneFilteredBtn: $('pruneFilteredBtn'),
+    restoreFilteredBtn: $('restoreFilteredBtn'),
     confirmAllBtn: $('verifyAllBtn'),
-    toggleRejectedBtn: $('toggleRejectedBtn'),
+    saveRuleBtn: $('saveRuleBtn'),
+    applyAllRulesBtn: $('applyAllRulesBtn'),
+    rulesList: $('rulesList'),
+    exportRulesBtn: $('exportRulesBtn'),
+    rulesFile: $('rulesFile'),
+    togglePrunedBtn: $('togglePrunedBtn'),
     expandAllBtn: $('expandAllBtn'),
     exportVerifiedBtn: $('exportVerifiedBtn'),
     exportFilteredBtn: $('exportFilteredBtn'),
@@ -27,7 +35,7 @@
     uniqueAuthors: $('uniqueAuthors'),
     firstSeen: $('firstSeen'),
     lastSeen: $('lastSeen'),
-    rejectedCount: $('rejectedCount'),
+    prunedCount: $('prunedCount'),
     verifiedCount: $('verifiedCount'),
     unverifiedCount: $('unverifiedCount'),
     verificationBar: $('verificationBar'),
@@ -41,9 +49,10 @@
     filtered: [],
     page: 0,
     pageSize: 50,
-    hideRejected: true,
+    hidePruned: true,
     collapsed: false,
     dateRange: [null, null],
+    rules: [],
   };
 
   /* ---------------- DOM helpers ---------------- */
@@ -91,10 +100,16 @@
     }
   }
 
+  // review = { confirmed: bool, pruned: reason string | null }. Older stores used { rejected: bool }.
+  const toReview = (saved = {}) => ({
+    confirmed: !!saved.confirmed,
+    pruned: saved.pruned ? String(saved.pruned) : saved.rejected ? MANUAL : null,
+  });
+
   function saveReviewStore() {
     const store = loadReviewStore();
     for (const r of state.records) {
-      if (r.review.confirmed || r.review.rejected) store[r.id] = { ...r.review };
+      if (r.review.confirmed || r.review.pruned) store[r.id] = { ...r.review };
       else delete store[r.id];
     }
     try {
@@ -116,8 +131,7 @@
     C.assignIds(records);
     const store = loadReviewStore();
     for (const r of records) {
-      const saved = store[r.id] || {};
-      r.review = { confirmed: !!saved.confirmed, rejected: !!saved.rejected, ...(r.review || {}) };
+      r.review = r.review ? toReview(r.review) : toReview(store[r.id]);
     }
     state.records = records;
     rebuildOptions();
@@ -146,7 +160,7 @@
     event.target.value = '';
   });
 
-  // Session format: JSON array of findings annotated with Rejected/Confirmed (legacy compatible).
+  // Session format: JSON array of findings annotated with Pruned/Confirmed (also reads legacy Rejected).
   el.sessionFile.addEventListener('change', async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -156,7 +170,7 @@
       if (!Array.isArray(data)) throw new Error('Session file is not an array of findings.');
       const records = data.map((item) => {
         const rec = C.normalizeFinding(C.stripInternal(item), item._uploadedFile || file.name);
-        rec.review = { confirmed: !!item.Confirmed, rejected: !!item.Rejected };
+        rec.review = toReview({ confirmed: item.Confirmed, pruned: item.Pruned, rejected: item.Rejected });
         return rec;
       });
       setRecords(records);
@@ -192,7 +206,7 @@
     const verified = recs.filter((r) => r.verified).length;
     el.verifiedCount.textContent = verified;
     el.unverifiedCount.textContent = recs.length - verified;
-    el.rejectedCount.textContent = recs.filter((r) => r.review.rejected).length;
+    el.prunedCount.textContent = recs.filter((r) => r.review.pruned).length;
     el.verificationBar.style.width = recs.length ? ((verified / recs.length) * 100).toFixed(1) + '%' : '0%';
   }
 
@@ -234,7 +248,7 @@
       error.textContent = msg;
     }
 
-    const out = state.records.filter((r) => !(state.hideRejected && r.review.rejected) && predicate.test(r));
+    const out = state.records.filter((r) => !(state.hidePruned && r.review.pruned) && predicate.test(r));
 
     const sorters = {
       dateAsc: (a, b) => (a.timestamp || 0) - (b.timestamp || 0),
@@ -255,6 +269,7 @@
 
   function refresh() {
     updateStats();
+    renderRules();
     const page = state.page;
     applyFilters();
     // Keep the reviewer on the same page after an action when possible.
@@ -312,9 +327,10 @@
 
     const actions = h('div', { class: 'card-actions' },
       h('button', {
-        class: 'btn btn-danger', title: r.review.rejected ? 'Restore this finding' : 'Reject this finding as a false positive',
-        onclick: (e) => { e.stopPropagation(); setReview([r], { rejected: !r.review.rejected }); },
-      }, icon(r.review.rejected ? 'arrow-counterclockwise' : 'x-circle'), r.review.rejected ? ' Restore' : ' Reject'),
+        class: r.review.pruned ? 'btn btn-info' : 'btn btn-danger',
+        title: r.review.pruned ? 'Restore this finding to the working set' : 'Prune this finding as a false positive',
+        onclick: (e) => { e.stopPropagation(); setReview([r], { pruned: r.review.pruned ? null : MANUAL }); },
+      }, icon(r.review.pruned ? 'arrow-counterclockwise' : 'scissors'), r.review.pruned ? ' Restore' : ' Prune'),
       h('button', {
         class: 'btn btn-secondary', title: 'Mark as a confirmed true positive',
         onclick: (e) => { e.stopPropagation(); setReview([r], { confirmed: !r.review.confirmed }); },
@@ -324,7 +340,7 @@
       h('div', { class: 'title' }, r.detector || 'Unknown detector',
         r.verified ? tag('Verified', 'tag-verified') : tag('Unverified', 'tag-unverified'),
         r.review.confirmed ? tag('Confirmed', 'tag-confirmed') : '',
-        r.review.rejected ? tag('Rejected', 'tag-rejected') : ''),
+        r.review.pruned ? h('span', { class: 'tag tag-rejected', title: r.review.pruned, text: 'Pruned' }) : ''),
       actions);
 
     const where = r.file ? `${r.file}${r.line ? ':' + r.line : ''}` : r.link;
@@ -346,11 +362,151 @@
       detail('Decoder:', r.decoder),
       detail('Description:', r.description),
       detail('Verification:', r.verificationError ? `Error: ${r.verificationError}` : (r.verified ? 'Verified by TruffleHog' : 'Not verified')),
+      r.review.pruned ? detail('Pruned:', r.review.pruned) : '',
       h('div', { class: 'leaked-container' }, h('strong', { text: 'Leaked Information:' }), '\n', r.secret || 'N/A'));
 
     card.append(header, summary, body);
     return card;
   }
+
+  /* ---------------- Pruning & rules ---------------- */
+
+  // Shows a preview of what will happen and prunes on confirmation. Returns the number pruned.
+  function pruneWithPreview(candidates, predicate, reason, label) {
+    const plan = C.planPrune(candidates, predicate);
+    const lines = [`${label}`, '', `Prune ${plan.prune.length} finding(s).`];
+    if (plan.protectedCount) lines.push(`Skip ${plan.protectedCount} TruffleHog-verified or confirmed finding(s).`);
+    if (plan.alreadyPruned) lines.push(`${plan.alreadyPruned} already pruned.`);
+    if (!plan.prune.length) {
+      alert(lines.concat('', 'Nothing to prune.').join('\n'));
+      return 0;
+    }
+    if (!confirm(lines.concat('', `Reason: ${reason}`).join('\n'))) return 0;
+    setReview(plan.prune, { pruned: reason });
+    return plan.prune.length;
+  }
+
+  function loadRules() {
+    try {
+      return C.parseRules(localStorage.getItem(RULES_KEY) || '[]').rules;
+    } catch {
+      return [];
+    }
+  }
+
+  function saveRules() {
+    try {
+      localStorage.setItem(RULES_KEY, JSON.stringify(state.rules));
+    } catch (e) {
+      console.warn('Unable to persist rules:', e);
+    }
+    renderRules();
+  }
+
+  const rulePredicate = (rule) => C.buildPredicate(rule).test;
+
+  function setFiltersFromRule(rule) {
+    for (const [key, { input }] of Object.entries(fieldInputs)) input.value = rule.fields[key] || '';
+    el.filterVerified.value = rule.verified || '';
+    applyFilters();
+  }
+
+  function renderRules() {
+    if (!state.rules.length) {
+      el.rulesList.replaceChildren(h('li', { class: 'rule-empty', text: 'No rules yet.' }));
+      return;
+    }
+    el.rulesList.replaceChildren(...state.rules.map((rule) => {
+      const pending = C.planPrune(state.records, rulePredicate(rule)).prune.length;
+      return h('li', { class: 'rule-item' },
+        h('div', { class: 'rule-head' },
+          h('span', { class: 'rule-name', text: rule.name }),
+          h('span', { class: 'rule-count', title: 'Findings this rule would prune now', text: String(pending) })),
+        h('div', { class: 'rule-pattern' }, h('code', { text: C.describeRule(rule) })),
+        h('div', { class: 'rule-actions' },
+          h('button', { class: 'btn btn-info btn-small', title: 'Load this rule into the filters', onclick: () => setFiltersFromRule(rule) }, icon('funnel')),
+          h('button', {
+            class: 'btn btn-danger btn-small', title: 'Prune findings matching this rule', disabled: !pending,
+            onclick: () => pruneWithPreview(state.records, rulePredicate(rule), `Rule: ${rule.name}`, `Apply rule "${rule.name}"`),
+          }, icon('scissors')),
+          h('button', {
+            class: 'btn btn-secondary btn-small', title: 'Delete this rule',
+            onclick: () => {
+              if (!confirm(`Delete rule "${rule.name}"? Findings it already pruned stay pruned.`)) return;
+              state.rules = state.rules.filter((r) => r.id !== rule.id);
+              saveRules();
+            },
+          }, icon('trash'))));
+    }));
+  }
+
+  el.pruneFilteredBtn.addEventListener('click', () => {
+    const spec = currentSpec();
+    const predicate = C.buildPredicate(spec);
+    if (Object.keys(predicate.errors).length) return alert('Fix the invalid filter patterns first.');
+    if (!predicate.active && !confirm('No filters are active. This will prune every unprotected finding. Continue?')) return;
+    const desc = C.describeRule(C.ruleFromSpec('', spec)) + (spec.from !== null ? ' · date range' : '');
+    pruneWithPreview(state.filtered, null, `Filter: ${desc}`, 'Prune filtered findings');
+  });
+
+  el.restoreFilteredBtn.addEventListener('click', () => {
+    const pruned = state.filtered.filter((r) => r.review.pruned);
+    if (!pruned.length) {
+      return alert(state.hidePruned
+        ? 'No pruned findings are visible. Use "Show Pruned" to include them in the results first.'
+        : 'No pruned findings match the current filters.');
+    }
+    if (confirm(`Restore ${pruned.length} pruned finding(s) to the working set?`)) setReview(pruned, { pruned: null });
+  });
+
+  el.saveRuleBtn.addEventListener('click', () => {
+    const spec = currentSpec();
+    if (Object.keys(C.buildPredicate(spec).errors).length) return alert('Fix the invalid filter patterns first.');
+    const draft = C.ruleFromSpec('', spec);
+    if (!Object.keys(draft.fields).length && !draft.verified) return alert('Set at least one pattern filter before saving a rule.');
+    const name = prompt(`Name for this rule:\n${C.describeRule(draft)}`, '');
+    if (name === null) return;
+    const rule = C.ruleFromSpec(name, spec);
+    state.rules = state.rules.filter((r) => r.id !== rule.id).concat(rule);
+    saveRules();
+  });
+
+  el.applyAllRulesBtn.addEventListener('click', () => {
+    if (!state.rules.length) return alert('No rules to apply.');
+    // Prune per rule so each finding records the first rule that matched.
+    const plans = state.rules.map((rule) => ({ rule, predicate: rulePredicate(rule) }));
+    const reasonFor = (r) => plans.find((p) => p.predicate(r));
+    const plan = C.planPrune(state.records, (r) => !!reasonFor(r));
+    if (!plan.prune.length) return alert('No unprotected findings match any rule.');
+    const msg = [`Apply ${state.rules.length} rule(s)`, '', `Prune ${plan.prune.length} finding(s).`];
+    if (plan.protectedCount) msg.push(`Skip ${plan.protectedCount} TruffleHog-verified or confirmed finding(s).`);
+    if (!confirm(msg.join('\n'))) return;
+    for (const r of plan.prune) r.review.pruned = `Rule: ${reasonFor(r).rule.name}`;
+    saveReviewStore();
+    refresh();
+  });
+
+  el.exportRulesBtn.addEventListener('click', () => {
+    if (!state.rules.length) return alert('No rules to export.');
+    const rules = state.rules.map(({ name, fields, verified }) => ({ name, fields, verified }));
+    download(JSON.stringify({ type: 'trufflehog-explorer-rules', version: 1, rules }, null, 2), 'prune_rules.json');
+  });
+
+  el.rulesFile.addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      const { rules, errors } = C.parseRules(await file.text());
+      errors.forEach((e) => logError(`${file.name}: ${e}`));
+      const ids = new Set(rules.map((r) => r.id));
+      state.rules = state.rules.filter((r) => !ids.has(r.id)).concat(rules);
+      saveRules();
+      alert(`Imported ${rules.length} rule(s)${errors.length ? `, skipped ${errors.length} (see error log)` : ''}.`);
+    } catch (e) {
+      logError(`Error importing rules: ${e.message}`);
+    }
+    event.target.value = '';
+  });
 
   /* ---------------- Actions ---------------- */
 
@@ -380,13 +536,15 @@
     applyFilters();
   });
 
-  el.rejectAllBtn.addEventListener('click', () => setReview(state.filtered, { rejected: true }));
-  el.confirmAllBtn.addEventListener('click', () => setReview(state.filtered, { confirmed: true }));
+  el.confirmAllBtn.addEventListener('click', () => {
+    if (!state.filtered.length) return;
+    if (confirm(`Mark ${state.filtered.length} filtered finding(s) as confirmed true positives?`)) setReview(state.filtered, { confirmed: true });
+  });
 
-  el.toggleRejectedBtn.addEventListener('click', () => {
-    state.hideRejected = !state.hideRejected;
-    el.toggleRejectedBtn.replaceChildren(icon(state.hideRejected ? 'eye' : 'eye-slash'),
-      state.hideRejected ? ' Show Rejected' : ' Hide Rejected');
+  el.togglePrunedBtn.addEventListener('click', () => {
+    state.hidePruned = !state.hidePruned;
+    el.togglePrunedBtn.replaceChildren(icon(state.hidePruned ? 'eye' : 'eye-slash'),
+      state.hidePruned ? ' Show Pruned' : ' Hide Pruned');
     applyFilters();
   });
 
@@ -413,10 +571,12 @@
   el.saveSessionBtn.addEventListener('click', () => {
     if (!state.records.length) return alert('No data loaded to save.');
     const session = state.records.map((r) => ({
-      ...r.raw, _uploadedFile: r.sourceFiles[0], Rejected: r.review.rejected, Confirmed: r.review.confirmed,
+      ...r.raw, _uploadedFile: r.sourceFiles[0], Pruned: r.review.pruned || undefined, Confirmed: r.review.confirmed,
     }));
     download(JSON.stringify(session, null, 2), 'session_backup.json');
   });
 
+  state.rules = loadRules();
+  renderRules();
   render();
 })();
