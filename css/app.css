@@ -660,3 +660,59 @@ header h1 {
 #loadStatus:empty {
   display: none;
 }
+
+/* Versions */
+.small-label {
+  font-size: 0.85rem;
+  margin-bottom: 2px;
+}
+#exportFormat {
+  margin-bottom: 8px;
+}
+.version-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.version-meta {
+  font-size: 0.75rem;
+  color: #777;
+  overflow-wrap: anywhere;
+}
+.version-dialog {
+  border: none;
+  border-radius: 10px;
+  padding: 20px;
+  width: min(460px, 92vw);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+}
+.version-dialog::backdrop {
+  background: rgba(60, 30, 70, 0.35);
+}
+.version-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.version-dialog input[type="text"],
+.version-dialog textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font: inherit;
+}
+.version-dialog fieldset {
+  border: 1px solid #eee;
+  border-radius: 6px;
+  margin-top: 6px;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}

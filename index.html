@@ -50,10 +50,10 @@
 
       <!-- 1B) LOAD SESSION -->
       <div class="sidebar-section">
-        <h2>Load Session</h2>
+        <h2>Load Review</h2>
         <div class="upload-group">
           <input type="file" id="sessionFile" accept=".json" class="file-input" />
-          <p>Load previously saved session (JSON)</p>
+          <p>Load a review file to re-apply decisions and rules to the loaded scan, or a legacy session backup</p>
         </div>
       </div>
 
@@ -184,31 +184,70 @@
         <!-- Export -->
         <div class="actions-group">
           <h3>Export</h3>
+          <label for="exportFormat" class="small-label">Format:</label>
+          <select id="exportFormat">
+            <option value="ndjson">NDJSON (TruffleHog format, re-loadable)</option>
+            <option value="json">JSON array</option>
+            <option value="csv">CSV (secrets masked)</option>
+          </select>
           <div class="buttons-group">
-            <!-- Button: Export Verified -->
-            <button class="btn btn-warning" id="exportVerifiedBtn">
-              <i class="bi bi-download"></i> &nbspExport Verified/Confirmed
+            <button class="btn btn-warning" id="exportKeptBtn" title="All findings that are not pruned">
+              <i class="bi bi-download"></i> &nbspExport Kept
             </button>
-            <!-- Button: Export Filtered -->
-            <button class="btn btn-warning" id="exportFilteredBtn">
+            <button class="btn btn-warning" id="exportPrunedBtn" title="All pruned findings">
+              <i class="bi bi-download"></i> &nbspExport Pruned
+            </button>
+            <button class="btn btn-warning" id="exportFilteredBtn" title="Findings currently shown by the filters">
               <i class="bi bi-download"></i> &nbspExport Filtered
+            </button>
+            <button class="btn btn-warning" id="exportVerifiedBtn" title="TruffleHog-verified or confirmed findings">
+              <i class="bi bi-download"></i> &nbspExport Verified/Confirmed
             </button>
           </div>
         </div>
 
-        <!-- Session Backup -->
+        <!-- Versions -->
         <div class="actions-group">
-          <h3>Session Backup</h3>
+          <h3>Versions</h3>
+          <p class="hint">Save the pruned result as a new version: downloads the kept and pruned sets plus a review file. Only a summary is remembered here, never the findings.</p>
           <div class="buttons-group">
-            <!-- Button: Save Session -->
-            <button class="btn btn-warning" id="saveSessionBtn">
-              <i class="bi bi-save"></i> &nbspSave Session
+            <button class="btn btn-secondary" id="saveVersionBtn">
+              <i class="bi bi-save"></i> &nbspSave Version…
+            </button>
+            <button class="btn btn-warning" id="saveSessionBtn" title="Review decisions and rules only (no secrets). Load it with the scan file to resume.">
+              <i class="bi bi-journal-check"></i> &nbspSave Review File
+            </button>
+            <button class="btn btn-danger" id="resetReviewBtn" title="Clear all prune and confirm decisions for the loaded findings">
+              <i class="bi bi-arrow-repeat"></i> &nbspReset Review
             </button>
           </div>
+          <ul id="versionList" class="version-list"></ul>
         </div>
 
       </div><!-- .sidebar-section -->
     </div><!-- .sidebar -->
+
+    <!-- Save version dialog -->
+    <dialog id="versionDialog" class="version-dialog">
+      <form method="dialog" id="versionForm">
+        <h3>Save Version</h3>
+        <p id="versionSummary" class="hint"></p>
+        <label for="versionLabel">Label</label>
+        <input type="text" id="versionLabel" required placeholder="e.g. pass-1-lockfiles" />
+        <label for="versionNotes">Notes (optional)</label>
+        <textarea id="versionNotes" rows="3" placeholder="What was pruned and why"></textarea>
+        <fieldset>
+          <legend>Files to download</legend>
+          <label class="checkbox-label"><input type="checkbox" id="versionKept" checked /> Kept findings (NDJSON)</label>
+          <label class="checkbox-label"><input type="checkbox" id="versionPruned" checked /> Pruned findings (NDJSON)</label>
+          <label class="checkbox-label"><input type="checkbox" id="versionReview" checked /> Review file (decisions + rules, no secrets)</label>
+        </fieldset>
+        <div class="dialog-actions">
+          <button type="submit" value="cancel" class="btn btn-info" formnovalidate>Cancel</button>
+          <button type="submit" value="save" class="btn btn-secondary" id="versionSaveBtn">Save</button>
+        </div>
+      </form>
+    </dialog>
 
     <!-- MAIN CONTENT -->
     <div class="main-content">

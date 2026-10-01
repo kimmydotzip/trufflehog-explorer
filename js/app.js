@@ -5,6 +5,7 @@
   const $ = (id) => document.getElementById(id);
   const REVIEW_KEY = 'thReview.v2';
   const RULES_KEY = 'thRules.v1';
+  const VERSIONS_KEY = 'thVersions.v1';
   const MANUAL = 'Pruned manually';
 
   const el = {
@@ -28,9 +29,23 @@
     rulesFile: $('rulesFile'),
     togglePrunedBtn: $('togglePrunedBtn'),
     expandAllBtn: $('expandAllBtn'),
+    exportFormat: $('exportFormat'),
+    exportKeptBtn: $('exportKeptBtn'),
+    exportPrunedBtn: $('exportPrunedBtn'),
     exportVerifiedBtn: $('exportVerifiedBtn'),
     exportFilteredBtn: $('exportFilteredBtn'),
     saveSessionBtn: $('saveSessionBtn'),
+    saveVersionBtn: $('saveVersionBtn'),
+    resetReviewBtn: $('resetReviewBtn'),
+    versionList: $('versionList'),
+    versionDialog: $('versionDialog'),
+    versionForm: $('versionForm'),
+    versionSummary: $('versionSummary'),
+    versionLabel: $('versionLabel'),
+    versionNotes: $('versionNotes'),
+    versionKept: $('versionKept'),
+    versionPruned: $('versionPruned'),
+    versionReview: $('versionReview'),
     totalFindings: $('totalFindings'),
     uniqueRepositories: $('uniqueRepositories'),
     uniqueDetectors: $('uniqueDetectors'),
@@ -176,6 +191,8 @@
     const parts = [`${append ? 'Added' : 'Loaded'} ${totals.added} finding(s) from ${files.length} file(s).`];
     if (totals.merged) parts.push(`${totals.merged} matched existing locations`);
     if (totals.upgraded) parts.push(`${totals.upgraded} marked verified by cross-reference`);
+    const reviewed = append ? 0 : records.filter((r) => r.review.confirmed || r.review.pruned).length;
+    if (reviewed) parts.push(`restored saved review for ${reviewed} finding(s) from this browser`);
     const prunedVerified = records.filter((r) => r.verified && r.review.pruned).length;
     if (prunedVerified) parts.push(`⚠ ${prunedVerified} verified finding(s) are pruned — use Show Pruned with Verified filter to review`);
     el.loadStatus.textContent = parts.join(' · ');
@@ -189,14 +206,30 @@
     setRecords([]);
   });
 
-  // Session format: JSON array of findings annotated with Pruned/Confirmed (also reads legacy Rejected).
+  // Accepts a review file (decisions + rules for the loaded scan) or a legacy session backup
+  // (array of findings annotated with Pruned/Rejected/Confirmed).
   el.sessionFile.addEventListener('change', async (event) => {
     const file = event.target.files[0];
     if (!file) return;
     el.errorLog.replaceChildren();
     try {
       const data = JSON.parse(await file.text());
-      if (!Array.isArray(data)) throw new Error('Session file is not an array of findings.');
+      if (C.isReviewFile(data)) {
+        if (!state.records.length) throw new Error('Load the scan file(s) first, then load the review file.');
+        const { applied, unmatched } = C.applyReviewFile(state.records, data);
+        const { rules, errors } = C.parseRules(data.rules || []);
+        errors.forEach((e) => logError(`${file.name}: ${e}`));
+        const ids = new Set(rules.map((r) => r.id));
+        state.rules = state.rules.filter((r) => !ids.has(r.id)).concat(rules);
+        saveRules();
+        saveReviewStore();
+        refresh();
+        el.loadStatus.textContent = `Review "${data.label || file.name}": applied ${applied} decision(s), ${rules.length} rule(s)` +
+          (unmatched ? ` · ${unmatched} decision(s) did not match a loaded finding` : '');
+        event.target.value = '';
+        return;
+      }
+      if (!Array.isArray(data)) throw new Error('Not a review file or a session backup (array of findings).');
       const records = data.map((item) => {
         const rec = C.normalizeFinding(C.stripInternal(item), item._uploadedFile || file.name);
         rec.review = toReview({ confirmed: item.Confirmed, pruned: item.Pruned, rejected: item.Rejected });
@@ -668,28 +701,120 @@
     render();
   });
 
-  const toJsonArray = (records) => JSON.stringify(records.map((r) => r.raw), null, 2);
+  /* ---------------- Export & versions ---------------- */
 
-  el.exportVerifiedBtn.addEventListener('click', () => {
-    const verified = state.records.filter((r) => r.verified || r.review.confirmed);
-    if (!verified.length) return alert('No verified or confirmed results to export.');
-    download(toJsonArray(verified), 'verified_findings.json');
-  });
+  const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const kept = () => state.records.filter((r) => !r.review.pruned);
+  const prunedRecords = () => state.records.filter((r) => r.review.pruned);
 
-  el.exportFilteredBtn.addEventListener('click', () => {
-    if (!state.filtered.length) return alert('No filtered results to export.');
-    download(toJsonArray(state.filtered), 'filtered_findings.json');
-  });
+  function exportRecords(records, name) {
+    if (!records.length) return alert('Nothing to export.');
+    const format = el.exportFormat.value;
+    if (format === 'csv') download(C.toCsv(records), `${name}_${stamp()}.csv`, 'text/csv');
+    else if (format === 'json') download(C.toJsonArray(records), `${name}_${stamp()}.json`);
+    else download(C.toNdjson(records), `${name}_${stamp()}.ndjson`, 'application/x-ndjson');
+  }
+
+  el.exportKeptBtn.addEventListener('click', () => exportRecords(kept(), 'kept_findings'));
+  el.exportPrunedBtn.addEventListener('click', () => exportRecords(prunedRecords(), 'pruned_findings'));
+  el.exportFilteredBtn.addEventListener('click', () => exportRecords(state.filtered, 'filtered_findings'));
+  el.exportVerifiedBtn.addEventListener('click', () =>
+    exportRecords(state.records.filter((r) => r.verified || r.review.confirmed), 'verified_findings'));
+
+  const sourceNames = () => [...new Set(state.records.flatMap((r) => r.sourceFiles))];
+
+  function reviewFile(meta) {
+    return JSON.stringify(C.buildReviewFile(state.records, state.rules, {
+      createdAt: new Date().toISOString(), sources: sourceNames(), ...meta,
+    }), null, 2);
+  }
 
   el.saveSessionBtn.addEventListener('click', () => {
     if (!state.records.length) return alert('No data loaded to save.');
-    const session = state.records.map((r) => ({
-      ...r.raw, _uploadedFile: r.sourceFiles[0], Pruned: r.review.pruned || undefined, Confirmed: r.review.confirmed,
-    }));
-    download(JSON.stringify(session, null, 2), 'session_backup.json');
+    download(reviewFile({ label: 'review' }), `review_${stamp()}.json`);
+  });
+
+  el.resetReviewBtn.addEventListener('click', () => {
+    const reviewed = state.records.filter((r) => r.review.pruned || r.review.confirmed);
+    if (!reviewed.length) return alert('No review decisions to reset.');
+    if (!confirm(`Clear prune and confirm decisions for ${reviewed.length} loaded finding(s)? Rules are kept.`)) return;
+    setReview(reviewed, { pruned: null, confirmed: false });
+  });
+
+  function loadVersions() {
+    try {
+      const list = JSON.parse(localStorage.getItem(VERSIONS_KEY) || '[]');
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function renderVersions() {
+    const versions = loadVersions();
+    if (!versions.length) {
+      el.versionList.replaceChildren(h('li', { class: 'rule-empty', text: 'No versions saved yet.' }));
+      return;
+    }
+    el.versionList.replaceChildren(...versions.slice().reverse().map((v) => h('li', { class: 'rule-item' },
+      h('div', { class: 'rule-head' },
+        h('span', { class: 'rule-name', text: v.label }),
+        h('span', { class: 'rule-count', title: 'Kept / pruned', text: `${v.counts.kept} / ${v.counts.pruned}` })),
+      h('div', { class: 'version-meta', text: `${new Date(v.createdAt).toLocaleString()} · ${v.sources.join(', ')}` }),
+      v.notes ? h('div', { class: 'version-meta', text: v.notes }) : '',
+      h('div', { class: 'version-meta', text: v.files.join(', ') }))));
+  }
+
+  el.saveVersionBtn.addEventListener('click', () => {
+    if (!state.records.length) return alert('No data loaded to save.');
+    const n = loadVersions().length + 1;
+    el.versionSummary.textContent = `${kept().length} kept · ${prunedRecords().length} pruned · ` +
+      `${state.records.filter((r) => r.review.confirmed).length} confirmed · ${state.rules.length} rule(s)`;
+    el.versionLabel.value = `v${n}`;
+    el.versionNotes.value = '';
+    el.versionDialog.showModal();
+    el.versionLabel.select();
+  });
+
+  el.versionDialog.addEventListener('close', () => {
+    if (el.versionDialog.returnValue !== 'save') return;
+    const label = el.versionLabel.value.trim() || 'version';
+    const notes = el.versionNotes.value.trim();
+    const base = `${C.slugify(label)}_${stamp()}`;
+    const files = [];
+    const keptRecs = kept();
+    const prunedRecs = prunedRecords();
+    if (el.versionKept.checked) {
+      download(C.toNdjson(keptRecs), `${base}_kept.ndjson`, 'application/x-ndjson');
+      files.push(`${base}_kept.ndjson`);
+    }
+    if (el.versionPruned.checked) {
+      download(C.toNdjson(prunedRecs), `${base}_pruned.ndjson`, 'application/x-ndjson');
+      files.push(`${base}_pruned.ndjson`);
+    }
+    if (el.versionReview.checked) {
+      download(reviewFile({ label, notes }), `${base}_review.json`);
+      files.push(`${base}_review.json`);
+    }
+    const versions = loadVersions();
+    versions.push({
+      label, notes, createdAt: new Date().toISOString(), sources: sourceNames(), files,
+      counts: {
+        total: state.records.length, kept: keptRecs.length, pruned: prunedRecs.length,
+        confirmed: state.records.filter((r) => r.review.confirmed).length, verified: state.records.filter((r) => r.verified).length,
+      },
+      rules: state.rules.map((r) => r.name),
+    });
+    try {
+      localStorage.setItem(VERSIONS_KEY, JSON.stringify(versions.slice(-50)));
+    } catch (e) {
+      console.warn('Unable to persist version history:', e);
+    }
+    renderVersions();
   });
 
   state.rules = loadRules();
   renderRules();
+  renderVersions();
   render();
 })();

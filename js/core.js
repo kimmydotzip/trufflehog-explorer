@@ -391,6 +391,89 @@
     };
   }
 
+  /* ---------------- Export & review files ---------------- */
+
+  // Original TruffleHog objects, one per line, so exports can be re-loaded or diffed against the scan.
+  const toNdjson = (records) => records.map((r) => JSON.stringify(r.raw)).join('\n') + (records.length ? '\n' : '');
+  const toJsonArray = (records) => JSON.stringify(records.map((r) => r.raw), null, 2);
+
+  function maskSecret(value) {
+    const s = str(value);
+    if (!s) return '';
+    if (s.length <= 8) return s.slice(0, 1) + '•'.repeat(Math.max(3, s.length - 1));
+    const keep = Math.min(4, Math.floor(s.length / 6));
+    return s.slice(0, keep) + '•'.repeat(8) + s.slice(-keep) + ` (${s.length} chars)`;
+  }
+
+  // Quotes every cell and neutralises spreadsheet formulas (=, +, -, @, tab, CR).
+  function csvCell(value) {
+    let s = str(value);
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+
+  const CSV_COLUMNS = [
+    ['detector', (r) => r.detector],
+    ['trufflehog_verified', (r) => (r.verified ? 'true' : 'false')],
+    ['confirmed', (r) => (r.review && r.review.confirmed ? 'true' : 'false')],
+    ['pruned_reason', (r) => (r.review && r.review.pruned) || ''],
+    ['repository', (r) => r.repository],
+    ['file', (r) => r.file],
+    ['line', (r) => r.line],
+    ['commit', (r) => r.commit],
+    ['author', (r) => r.email],
+    ['timestamp', (r) => r.timestampText],
+    ['link', (r) => r.link],
+    ['source_files', (r) => r.sourceFiles.join('; ')],
+    ['secret_masked', (r) => maskSecret(r.secret)],
+    ['secret_id', (r) => r.secretKey],
+  ];
+
+  function toCsv(records, { includeSecret = false } = {}) {
+    const cols = includeSecret ? CSV_COLUMNS.concat([['secret', (r) => r.secret]]) : CSV_COLUMNS;
+    const rows = [cols.map(([name]) => csvCell(name)).join(',')];
+    for (const r of records) rows.push(cols.map(([, get]) => csvCell(get(r))).join(','));
+    return rows.join('\r\n') + '\r\n';
+  }
+
+  const REVIEW_TYPE = 'trufflehog-explorer-review';
+
+  // Review files hold decisions keyed by finding id plus rules; they never contain secret values.
+  function buildReviewFile(records, rules, meta = {}) {
+    const review = {};
+    for (const r of records) {
+      if (r.review && (r.review.confirmed || r.review.pruned)) {
+        review[r.id] = { confirmed: !!r.review.confirmed, pruned: r.review.pruned || null };
+      }
+    }
+    return {
+      type: REVIEW_TYPE,
+      version: 1,
+      ...meta,
+      rules: (rules || []).map(({ name, fields, verified }) => ({ name, fields, verified })),
+      review,
+    };
+  }
+
+  const isReviewFile = (data) => !!data && typeof data === 'object' && !Array.isArray(data) && data.type === REVIEW_TYPE;
+
+  function applyReviewFile(records, data) {
+    const review = (data && data.review) || {};
+    let applied = 0;
+    for (const r of records) {
+      const saved = review[r.id];
+      if (!saved) continue;
+      r.review = { confirmed: !!saved.confirmed, pruned: saved.pruned ? String(saved.pruned) : null };
+      applied++;
+    }
+    return { applied, unmatched: Object.keys(review).length - applied };
+  }
+
+  function slugify(text, fallback = 'version') {
+    const s = str(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+    return s || fallback;
+  }
+
   return {
     hash, str, parseTimestamp, sourceMeta, normalizeFinding, stripInternal,
     parseFindings, assignIds, escapeHtml, safeUrl,
@@ -398,5 +481,6 @@
     FIELDS, FIELD_BY_KEY, buildPredicate,
     isProtected, planPrune, ruleFromSpec, describeRule, parseRules,
     groupBySecret, summarizeGroup, mergeRecords,
+    toNdjson, toJsonArray, maskSecret, csvCell, toCsv, buildReviewFile, isReviewFile, applyReviewFile, slugify,
   };
 });
