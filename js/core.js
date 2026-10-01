@@ -333,11 +333,36 @@
     return { rules, errors };
   }
 
+  // Groups records sharing the same detector + secret, largest groups first (stable for ties).
+  function groupBySecret(records) {
+    const groups = new Map();
+    for (const r of records) {
+      let g = groups.get(r.secretKey);
+      if (!g) groups.set(r.secretKey, (g = { key: r.secretKey, detector: r.detector, secret: r.secret, records: [] }));
+      g.records.push(r);
+    }
+    return [...groups.values()].sort((a, b) => b.records.length - a.records.length);
+  }
+
+  function summarizeGroup(group) {
+    const recs = group.records;
+    const uniq = (fn) => new Set(recs.map(fn).filter(Boolean)).size;
+    return {
+      count: recs.length,
+      repos: uniq((r) => r.repository),
+      files: uniq((r) => r.file),
+      verified: recs.filter((r) => r.verified).length,
+      confirmed: recs.filter((r) => r.review && r.review.confirmed).length,
+      pruned: recs.filter((r) => r.review && r.review.pruned).length,
+    };
+  }
+
   return {
     hash, str, parseTimestamp, sourceMeta, normalizeFinding, stripInternal,
     parseFindings, assignIds, escapeHtml, safeUrl,
     escapeRegex, splitPatterns, compilePattern, compileFilter, matchFilter, extraValues,
     FIELDS, FIELD_BY_KEY, buildPredicate,
     isProtected, planPrune, ruleFromSpec, describeRule, parseRules,
+    groupBySecret, summarizeGroup,
   };
 });

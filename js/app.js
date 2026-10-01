@@ -41,6 +41,8 @@
     verificationBar: $('verificationBar'),
     filteredCountDisplay: $('filteredCountDisplay'),
     results: $('results-container'),
+    viewFindingsBtn: $('viewFindingsBtn'),
+    viewGroupsBtn: $('viewGroupsBtn'),
     errorLog: $('errorLog'),
   };
 
@@ -53,7 +55,12 @@
     collapsed: false,
     dateRange: [null, null],
     rules: [],
+    view: 'findings', // or 'groups'
+    groups: [],
+    expandedGroups: new Set(),
   };
+
+  const items = () => (state.view === 'groups' ? state.groups : state.filtered);
 
   /* ---------------- DOM helpers ---------------- */
 
@@ -263,6 +270,7 @@
     if (sorters[el.sortBy.value]) out.sort(sorters[el.sortBy.value]);
 
     state.filtered = out;
+    state.groups = state.view === 'groups' ? C.groupBySecret(out) : [];
     state.page = 0;
     render();
   }
@@ -273,7 +281,7 @@
     const page = state.page;
     applyFilters();
     // Keep the reviewer on the same page after an action when possible.
-    const maxPage = Math.max(0, Math.ceil(state.filtered.length / state.pageSize) - 1);
+    const maxPage = Math.max(0, Math.ceil(items().length / state.pageSize) - 1);
     if (page !== state.page) {
       state.page = Math.min(page, maxPage);
       render();
@@ -283,12 +291,14 @@
   /* ---------------- Rendering ---------------- */
 
   function render() {
-    const total = state.filtered.length;
+    const list = items();
+    const total = list.length;
     const startIdx = state.page * state.pageSize;
     const endIdx = Math.min(startIdx + state.pageSize, total);
+    const groupNote = state.view === 'groups' ? ` unique secrets from ${state.filtered.length} findings` : ' filtered';
     el.filteredCountDisplay.textContent = total
-      ? `Showing ${startIdx + 1}-${endIdx} / ${total} filtered (${state.records.length} total)`
-      : `Showing 0 / 0 filtered (${state.records.length} total)`;
+      ? `Showing ${startIdx + 1}-${endIdx} / ${total}${groupNote} (${state.records.length} total)`
+      : `Showing 0 / 0${groupNote} (${state.records.length} total)`;
 
     if (!total) {
       el.results.replaceChildren(h('p', {
@@ -296,12 +306,13 @@
       }));
       return;
     }
-    const cards = state.filtered.slice(startIdx, endIdx).map(renderCard);
+    const renderItem = state.view === 'groups' ? renderGroupCard : renderCard;
+    const cards = list.slice(startIdx, endIdx).map(renderItem);
     el.results.replaceChildren(...cards, renderPager());
   }
 
   function renderPager() {
-    const pages = Math.ceil(state.filtered.length / state.pageSize);
+    const pages = Math.ceil(items().length / state.pageSize);
     if (pages <= 1) return '';
     const go = (p) => () => {
       state.page = p;
@@ -364,6 +375,75 @@
       detail('Verification:', r.verificationError ? `Error: ${r.verificationError}` : (r.verified ? 'Verified by TruffleHog' : 'Not verified')),
       r.review.pruned ? detail('Pruned:', r.review.pruned) : '',
       h('div', { class: 'leaked-container' }, h('strong', { text: 'Leaked Information:' }), '\n', r.secret || 'N/A'));
+
+    card.append(header, summary, body);
+    return card;
+  }
+
+  const GROUP_PREVIEW = 25;
+
+  function renderGroupCard(g) {
+    const s = C.summarizeGroup(g);
+    const card = h('div', { class: 'result-container group-card' + (state.collapsed ? ' collapsed' : '') });
+    const unprunedCount = s.count - s.pruned;
+    const allConfirmed = s.confirmed === s.count;
+
+    const actions = h('div', { class: 'card-actions' },
+      unprunedCount ? h('button', {
+        class: 'btn btn-danger', title: 'Prune every occurrence of this secret (verified/confirmed are skipped)',
+        onclick: (e) => { e.stopPropagation(); pruneWithPreview(g.records, null, `${MANUAL} (all occurrences of secret)`, `Prune ${g.detector} secret`); },
+      }, icon('scissors'), ` Prune ${unprunedCount}`) : '',
+      s.pruned ? h('button', {
+        class: 'btn btn-info', title: 'Restore every pruned occurrence of this secret',
+        onclick: (e) => { e.stopPropagation(); setReview(g.records.filter((r) => r.review.pruned), { pruned: null }); },
+      }, icon('arrow-counterclockwise'), ` Restore ${s.pruned}`) : '',
+      h('button', {
+        class: 'btn btn-secondary', title: 'Mark every occurrence as a confirmed true positive',
+        onclick: (e) => { e.stopPropagation(); setReview(g.records, { confirmed: !allConfirmed }); },
+      }, icon('check-circle'), allConfirmed ? ' Unconfirm All' : ' Confirm All'));
+
+    const header = h('div', { class: 'result-header', onclick: () => card.classList.toggle('collapsed') },
+      h('div', { class: 'title' }, g.detector || 'Unknown detector',
+        s.verified ? tag(`Verified ×${s.verified}`, 'tag-verified') : tag('Unverified', 'tag-unverified'),
+        s.confirmed ? tag(`Confirmed ×${s.confirmed}`, 'tag-confirmed') : '',
+        s.pruned ? tag(`Pruned ×${s.pruned}`, 'tag-rejected') : ''),
+      actions);
+
+    const snippet = g.secret.length > 50 ? g.secret.slice(0, 50) + '…' : g.secret;
+    const summary = h('div', { class: 'summary-line' },
+      h('strong', { text: `${s.count} occurrence${s.count === 1 ? '' : 's'}` }),
+      ` in ${s.files} file${s.files === 1 ? '' : 's'} across ${s.repos} repo${s.repos === 1 ? '' : 's'} — `,
+      h('strong', { text: 'Snippet: ' }), snippet);
+
+    const expanded = state.expandedGroups.has(g.key);
+    const shown = expanded ? g.records : g.records.slice(0, GROUP_PREVIEW);
+    const rows = shown.map((r) => {
+      const where = r.file ? `${r.file}${r.line ? ':' + r.line : ''}` : r.link || 'N/A';
+      const url = C.safeUrl(r.link);
+      return h('tr', { class: r.review.pruned ? 'row-pruned' : '' },
+        h('td', {}, url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', text: where }) : where),
+        h('td', { text: r.repository || 'N/A' }),
+        h('td', { text: r.commit ? r.commit.slice(0, 10) : '' }),
+        h('td', { text: r.timestampText }),
+        h('td', {},
+          r.verified ? tag('Verified', 'tag-verified') : '',
+          r.review.confirmed ? tag('Confirmed', 'tag-confirmed') : '',
+          r.review.pruned ? h('span', { class: 'tag tag-rejected', title: r.review.pruned, text: 'Pruned' }) : ''));
+    });
+    const more = g.records.length - shown.length;
+
+    const body = h('div', { class: 'result-body group-body' },
+      h('table', { class: 'occurrences' },
+        h('thead', {}, h('tr', {}, ['Path', 'Repository', 'Commit', 'Date', 'Status'].map((t) => h('th', { text: t })))),
+        h('tbody', {}, rows)),
+      more > 0 || expanded && g.records.length > GROUP_PREVIEW ? h('button', {
+        class: 'btn btn-info btn-small',
+        onclick: () => {
+          if (expanded) state.expandedGroups.delete(g.key); else state.expandedGroups.add(g.key);
+          card.replaceWith(renderGroupCard(g));
+        },
+      }, expanded ? 'Show fewer' : `Show all ${g.records.length} occurrences`) : '',
+      h('div', { class: 'leaked-container' }, h('strong', { text: 'Leaked Information:' }), '\n', g.secret || 'N/A'));
 
     card.append(header, summary, body);
     return card;
@@ -547,6 +627,17 @@
       state.hidePruned ? ' Show Pruned' : ' Hide Pruned');
     applyFilters();
   });
+
+  function setView(view) {
+    state.view = view;
+    for (const [btn, v] of [[el.viewFindingsBtn, 'findings'], [el.viewGroupsBtn, 'groups']]) {
+      btn.classList.toggle('active', v === view);
+      btn.setAttribute('aria-pressed', String(v === view));
+    }
+    applyFilters();
+  }
+  el.viewFindingsBtn.addEventListener('click', () => setView('findings'));
+  el.viewGroupsBtn.addEventListener('click', () => setView('groups'));
 
   el.expandAllBtn.addEventListener('click', () => {
     state.collapsed = !state.collapsed;

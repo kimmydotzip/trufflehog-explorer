@@ -602,3 +602,44 @@ header h1 {
   font-size: 0.85rem;
   width: auto;
 }
+
+/* Results view switch and grouped cards */
+.results-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.view-switch {
+  display: inline-flex;
+  gap: 6px;
+}
+.view-switch .btn.active {
+  background-color: #b56cc2;
+  color: #fff;
+}
+.group-body {
+  display: block;
+}
+.group-body > * + * {
+  margin-top: 8px;
+}
+.occurrences {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.occurrences th,
+.occurrences td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid #f0e4f3;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+.occurrences th {
+  color: #888;
+  font-weight: 500;
+}
+.occurrences .row-pruned td {
+  opacity: 0.55;
+}
